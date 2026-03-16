@@ -8,10 +8,14 @@ import (
 	"net"
 	"net/http"
 	"strconv"
+	"sync"
+	"sync/atomic"
+	"time"
 
 	"github.com/yourorg/proxy-pac/pac"
 	"github.com/yourorg/proxy-pac/router"
 	"github.com/yourorg/proxy-pac/socks5"
+	"github.com/yourorg/proxy-pac/status"
 )
 
 // Server implements the HTTP CONNECT and SOCKS5 proxy.
@@ -22,6 +26,13 @@ type Server struct {
 	httpServer *http.Server
 	socks5Conn chan net.Conn
 	stopped    chan struct{}
+
+	mu         sync.RWMutex
+	conns      map[string]*status.Connection
+	totalConns atomic.Int64
+	nextID     atomic.Int64
+	tunDevice  string
+	tunIP      net.IP
 }
 
 // NewServer creates a new proxy server.
@@ -32,6 +43,8 @@ func NewServer(cfg pac.ProxyConfig, evaluator *pac.Evaluator, router *router.Rou
 		router:     router,
 		socks5Conn: make(chan net.Conn, 100),
 		stopped:    make(chan struct{}),
+		conns:      make(map[string]*status.Connection),
+		tunDevice:  cfg.TUNDevice,
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", s.handleHTTPConnect)
@@ -40,6 +53,13 @@ func NewServer(cfg pac.ProxyConfig, evaluator *pac.Evaluator, router *router.Rou
 		Handler: mux,
 	}
 	return s
+}
+
+// SetTUNIP sets the TUN IP address (called from main after discovery).
+func (s *Server) SetTUNIP(ip net.IP) {
+	s.mu.Lock()
+	s.tunIP = ip
+	s.mu.Unlock()
 }
 
 // Start begins accepting connections.
@@ -60,6 +80,81 @@ func (s *Server) Stop() error {
 	return s.httpServer.Close()
 }
 
+// trackConnection records a new active connection.
+func (s *Server) trackConnection(clientAddr, dest, route, protocol string) string {
+	id := fmt.Sprintf("conn-%d", s.nextID.Add(1))
+	conn := &status.Connection{
+		ID:         id,
+		ClientAddr: clientAddr,
+		DestAddr:   dest,
+		Route:      route,
+		Protocol:   protocol,
+		StartedAt:  time.Now(),
+	}
+	s.mu.Lock()
+	s.conns[id] = conn
+	s.mu.Unlock()
+	s.totalConns.Add(1)
+	return id
+}
+
+// untrackConnection removes a connection from tracking.
+func (s *Server) untrackConnection(id string) {
+	s.mu.Lock()
+	delete(s.conns, id)
+	s.mu.Unlock()
+}
+
+// Status returns the current server status.
+func (s *Server) Status() status.ServerStatus {
+	s.mu.RLock()
+	tunIP := s.tunIP
+	tunDevice := s.tunDevice
+	activeConns := len(s.conns)
+	s.mu.RUnlock()
+
+	tunUp := false
+	tunIPStr := ""
+	if tunIP != nil {
+		tunIPStr = tunIP.String()
+		// Re-check interface is still up
+		iface, err := net.InterfaceByName(tunDevice)
+		if err == nil {
+			addrs, err := iface.Addrs()
+			if err == nil {
+				for _, addr := range addrs {
+					if ipnet, ok := addr.(*net.IPNet); ok && ipnet.IP.To4() != nil {
+						tunUp = true
+						break
+					}
+				}
+			}
+		}
+	}
+
+	return status.ServerStatus{
+		HTTPListen:   s.cfg.HTTPListen,
+		SOCKS5Listen: s.cfg.SOCKS5Listen,
+		AdminListen:  s.cfg.AdminListen,
+		TUNDevice:    tunDevice,
+		TUNIP:        tunIPStr,
+		TUNUp:        tunUp,
+		ActiveConns:  activeConns,
+		TotalConns:   s.totalConns.Load(),
+	}
+}
+
+// Connections returns a snapshot of current active connections.
+func (s *Server) Connections() []status.Connection {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	result := make([]status.Connection, 0, len(s.conns))
+	for _, c := range s.conns {
+		result = append(result, *c)
+	}
+	return result
+}
+
 // handleHTTPConnect handles HTTP CONNECT tunneling requests.
 func (s *Server) handleHTTPConnect(w http.ResponseWriter, r *http.Request) {
 	if r.Method != "CONNECT" {
@@ -75,7 +170,7 @@ func (s *Server) handleHTTPConnect(w http.ResponseWriter, r *http.Request) {
 	dest := fmt.Sprintf("%s:%d", host, port)
 
 	route := s.evaluator.Evaluate(host)
-	conn, err := s.router.Route(dest, route)
+	outbound, err := s.router.Route(dest, route)
 	if err != nil {
 		log.Printf("Route failed for %s: %v", dest, err)
 		http.Error(w, "Service unavailable", http.StatusBadGateway)
@@ -93,7 +188,9 @@ func (s *Server) handleHTTPConnect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	clientConn.Write([]byte("HTTP/1.1 200 Connection Established\r\n\r\n"))
-	go s.relay(clientConn, conn)
+
+	connID := s.trackConnection(clientConn.RemoteAddr().String(), dest, route.Strategy, "http")
+	go s.relay(connID, clientConn, outbound)
 }
 
 // listenSOCKS5 accepts SOCKS5 client connections.
@@ -208,11 +305,14 @@ func (s *Server) handleSOCKS5(conn net.Conn) {
 
 	// Success
 	conn.Write(socks5.EncodeReply(socks5.REPSuccess))
-	s.relay(conn, outbound)
+
+	connID := s.trackConnection(conn.RemoteAddr().String(), dest, route.Strategy, "socks5")
+	s.relay(connID, conn, outbound)
 }
 
 // relay copies data between two connections bidirectionally.
-func (s *Server) relay(left, right net.Conn) {
+func (s *Server) relay(connID string, left, right net.Conn) {
+	defer s.untrackConnection(connID)
 	defer left.Close()
 	defer right.Close()
 	errCh := make(chan error, 2)

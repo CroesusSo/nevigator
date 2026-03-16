@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"log"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"github.com/yourorg/proxy-pac/admin"
+	"github.com/yourorg/proxy-pac/gfw"
 	"github.com/yourorg/proxy-pac/pac"
 	"github.com/yourorg/proxy-pac/proxy"
 	"github.com/yourorg/proxy-pac/router"
@@ -33,6 +35,15 @@ type Config struct {
 		EvalTimeout    time.Duration `yaml:"eval_timeout"`
 		EnableDNSCache bool          `yaml:"enable_dns_cache"`
 	} `yaml:"pac"`
+	GFW struct {
+		SourceURL      string        `yaml:"source_url"`
+		LocalRulesPath string        `yaml:"local_rules_path"`
+		UserRulesPath  string        `yaml:"user_rules_path"`
+		UseTUN         bool          `yaml:"use_tun"`
+		UpdateInterval time.Duration `yaml:"update_interval"`
+		FetchOnStartup bool          `yaml:"fetch_on_startup"`
+		HTTPTimeout    time.Duration `yaml:"http_timeout"`
+	} `yaml:"gfw"`
 }
 
 func loadConfig(path string) (*Config, error) {
@@ -86,9 +97,11 @@ func discoverTUNIP(deviceName string) (net.IP, error) {
 
 // defaultConfigYAML returns the default config YAML with PAC path resolved.
 func defaultConfigYAML(pacPath string) string {
+	home, _ := os.UserHomeDir()
+	defaultConfigDir := filepath.Join(home, ".config", "proxy-pac")
 	return fmt.Sprintf(`proxy:
   http_listen: ":8080"
-  socks5_listen: ":1080"
+  socks5_listen: ":11080"
   admin_listen: "127.0.0.1:9090"
   pac_path: "%s"
   tun_device: "tun0"
@@ -98,7 +111,16 @@ pac:
   dns_timeout: 500ms
   eval_timeout: 200ms
   enable_dns_cache: false
-`, pacPath)
+
+gfw:
+  source_url: "https://github.com/gfwlist/gfwlist/raw/refs/heads/master/gfwlist.txt"
+  local_rules_path: "%s"
+  user_rules_path: "%s"
+  use_tun: true
+  update_interval: 24h
+  fetch_on_startup: true
+  http_timeout: 60s
+`, pacPath, filepath.Join(defaultConfigDir, "gfw-rules.json"), filepath.Join(defaultConfigDir, "user-rules.json"))
 }
 
 // resolveConfigPath returns the config file path and whether it needs generation.
@@ -137,7 +159,7 @@ func generateDefaultConfig(configPath string) error {
 func defaultConfig() *Config {
 	cfg := &Config{}
 	cfg.Proxy.HTTPListen = ":8080"
-	cfg.Proxy.SOCKS5Listen = ":1080"
+	cfg.Proxy.SOCKS5Listen = ":11080"
 	cfg.Proxy.AdminListen = "127.0.0.1:9090"
 	cfg.Proxy.TUNDevice = "tun0"
 	cfg.PAC.DNSTimeout = 500 * time.Millisecond
@@ -178,6 +200,18 @@ func main() {
 	// Default PAC path to be alongside the config file
 	if cfg.Proxy.PACPath == "" {
 		cfg.Proxy.PACPath = filepath.Join(filepath.Dir(configPath), "proxy.pac")
+	}
+
+	// Set default paths for user rules and GFW rules
+	if cfg.GFW.UserRulesPath == "" {
+		cfg.GFW.UserRulesPath = filepath.Join(filepath.Dir(configPath), "user-rules.json")
+	}
+	if cfg.GFW.LocalRulesPath == "" {
+		cfg.GFW.LocalRulesPath = filepath.Join(filepath.Dir(configPath), "gfw-rules.json")
+	}
+	// Set default GFW source URL if not configured
+	if cfg.GFW.SourceURL == "" {
+		cfg.GFW.SourceURL = "https://github.com/gfwlist/gfwlist/raw/refs/heads/master/gfwlist.txt"
 	}
 
 	// Discover TUN IP
@@ -228,10 +262,76 @@ func main() {
 		TUNDevice:    cfg.Proxy.TUNDevice,
 	}
 	proxySrv := proxy.NewServer(proxyCfg, evaluator, router)
+	proxySrv.SetTUNIP(tunIP)
+
+	// Create GFW fetcher if configured
+	var gfwFetcher *gfw.Fetcher
+	if cfg.GFW.SourceURL != "" {
+		gfwPath := cfg.GFW.LocalRulesPath
+		if gfwPath == "" {
+			gfwPath = filepath.Join(filepath.Dir(configPath), "gfw-rules.json")
+		}
+		userPath := cfg.GFW.UserRulesPath
+		if userPath == "" {
+			userPath = filepath.Join(filepath.Dir(configPath), "user-rules.json")
+		}
+		httpTimeout := cfg.GFW.HTTPTimeout
+		if httpTimeout == 0 {
+			httpTimeout = 60 * time.Second
+		}
+
+		gfwFetcher = gfw.NewFetcher(cfg.GFW.SourceURL, gfwPath, httpTimeout)
+
+		// If use_tun is enabled and TUN IP discovered, bind HTTP client to TUN interface
+		if cfg.GFW.UseTUN && tunIP != nil {
+			log.Printf("[GFW] Using TUN interface %s for fetches", tunIP)
+			gfwFetcher.HTTPClient = &http.Client{
+				Transport: &http.Transport{
+					DialContext: (&net.Dialer{
+						LocalAddr: &net.TCPAddr{IP: tunIP},
+					}).DialContext,
+				},
+				Timeout: httpTimeout,
+			}
+		}
+
+		// Fetch on startup
+		if cfg.GFW.FetchOnStartup {
+			go func() {
+				log.Printf("[GFW] Fetching GFW list on startup...")
+				result := gfwFetcher.Fetch(context.Background())
+				if result.Error != nil {
+					log.Printf("[GFW] Startup fetch failed: %v", result.Error)
+				} else if result.Updated {
+					log.Printf("[GFW] Startup fetch: %d rules loaded", result.RuleCount)
+					regeneratePAC(userPath, gfwPath, cfg.Proxy.PACPath)
+				}
+			}()
+		}
+
+		// Periodic fetch loop
+		if cfg.GFW.UpdateInterval > 0 {
+			go func() {
+				ticker := time.NewTicker(cfg.GFW.UpdateInterval)
+				defer ticker.Stop()
+				for range ticker.C {
+					log.Printf("[GFW] Periodic fetch...")
+					result := gfwFetcher.Fetch(context.Background())
+					if result.Error != nil {
+						log.Printf("[GFW] Periodic fetch failed: %v", result.Error)
+					} else if result.Updated {
+						log.Printf("[GFW] Periodic fetch: %d rules updated", result.RuleCount)
+						regeneratePAC(userPath, gfwPath, cfg.Proxy.PACPath)
+					}
+				}
+			}()
+			log.Printf("[GFW] Periodic fetch enabled: every %v", cfg.GFW.UpdateInterval)
+		}
+	}
 
 	// Start admin service
 	adminMux := http.NewServeMux()
-	adminHandler := admin.NewHandler(evaluator, cfg.Proxy.PACPath)
+	adminHandler := admin.NewHandler(evaluator, cfg.Proxy.PACPath, gfwFetcher, cfg.GFW.UserRulesPath, cfg.GFW.LocalRulesPath, configPath, proxySrv)
 	adminHandler.RegisterRoutes(adminMux)
 	adminSrv := &http.Server{
 		Addr:    cfg.Proxy.AdminListen,
@@ -256,11 +356,18 @@ func main() {
 	log.Println("Shutting down...")
 
 	proxySrv.Stop()
-	adminSrv.Shutdown(nil)
+	adminSrv.Shutdown(context.Background())
 	evaluator.Close()
 }
 
 // errorsIs wrapper for Go 1.13+ but compatibility with older? We'll ignore
 func errorsIs(err, target error) bool {
 	return err == target
+}
+
+// regeneratePAC reads user and GFW rules, generates PAC, and writes it.
+func regeneratePAC(userPath, gfwPath, pacPath string) {
+	if err := gfw.RegeneratePAC(userPath, gfwPath, pacPath); err != nil {
+		log.Printf("[PAC] Regeneration failed: %v", err)
+	}
 }

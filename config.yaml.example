@@ -10,3 +10,11 @@ pac:
   dns_timeout: 500ms
   eval_timeout: 200ms
   enable_dns_cache: true
+
+gfw:
+  source_url: "https://github.com/gfwlist/gfwlist/raw/refs/heads/master/gfwlist.txt"
+  local_rules_path: "/etc/proxy-pac/gfw-rules.json"
+  user_rules_path: "/etc/proxy-pac/user-rules.json"
+  update_interval: 24h
+  fetch_on_startup: true
+  http_timeout: 30s
