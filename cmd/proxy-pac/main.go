@@ -23,11 +23,13 @@ import (
 
 type Config struct {
 	Proxy struct {
-		HTTPListen   string `yaml:"http_listen"`
-		SOCKS5Listen string `yaml:"socks5_listen"`
-		AdminListen  string `yaml:"admin_listen"`
-		PACPath      string `yaml:"pac_path"`
-		TUNDevice    string `yaml:"tun_device"`
+		HTTPListen           string              `yaml:"http_listen"`
+		SOCKS5Listen         string              `yaml:"socks5_listen"`
+		AdminListen          string              `yaml:"admin_listen"`
+		PACPath              string              `yaml:"pac_path"`
+		TUNDevice            string              `yaml:"tun_device"`
+		DefaultExternalProxy string              `yaml:"default_external_proxy"`
+		ExternalProxies      []pac.ExternalProxy `yaml:"external_proxies"`
 	} `yaml:"proxy"`
 	PAC struct {
 		LocalIP        string        `yaml:"local_ip"`
@@ -105,6 +107,8 @@ func defaultConfigYAML(pacPath string) string {
   admin_listen: "127.0.0.1:9090"
   pac_path: "%s"
   tun_device: "tun0"
+  default_external_proxy: ""
+  external_proxies: []
 
 pac:
   local_ip: ""
@@ -264,6 +268,14 @@ func main() {
 	proxySrv := proxy.NewServer(proxyCfg, evaluator, router)
 	proxySrv.SetTUNIP(tunIP)
 
+	// Set external proxy registry and default
+	if len(cfg.Proxy.ExternalProxies) > 0 {
+		router.SetProxyRegistry(cfg.Proxy.ExternalProxies)
+	}
+	if cfg.Proxy.DefaultExternalProxy != "" {
+		router.SetDefaultProxyID(cfg.Proxy.DefaultExternalProxy)
+	}
+
 	// Create GFW fetcher if configured
 	var gfwFetcher *gfw.Fetcher
 	if cfg.GFW.SourceURL != "" {
@@ -304,7 +316,7 @@ func main() {
 					log.Printf("[GFW] Startup fetch failed: %v", result.Error)
 				} else if result.Updated {
 					log.Printf("[GFW] Startup fetch: %d rules loaded", result.RuleCount)
-					regeneratePAC(userPath, gfwPath, cfg.Proxy.PACPath)
+					regeneratePAC(userPath, gfwPath, cfg.Proxy.PACPath, cfg.Proxy.DefaultExternalProxy)
 				}
 			}()
 		}
@@ -321,7 +333,7 @@ func main() {
 						log.Printf("[GFW] Periodic fetch failed: %v", result.Error)
 					} else if result.Updated {
 						log.Printf("[GFW] Periodic fetch: %d rules updated", result.RuleCount)
-						regeneratePAC(userPath, gfwPath, cfg.Proxy.PACPath)
+						regeneratePAC(userPath, gfwPath, cfg.Proxy.PACPath, cfg.Proxy.DefaultExternalProxy)
 					}
 				}
 			}()
@@ -331,7 +343,7 @@ func main() {
 
 	// Start admin service
 	adminMux := http.NewServeMux()
-	adminHandler := admin.NewHandler(evaluator, cfg.Proxy.PACPath, gfwFetcher, cfg.GFW.UserRulesPath, cfg.GFW.LocalRulesPath, configPath, proxySrv)
+	adminHandler := admin.NewHandler(evaluator, cfg.Proxy.PACPath, gfwFetcher, cfg.GFW.UserRulesPath, cfg.GFW.LocalRulesPath, configPath, proxySrv, router, cfg.Proxy.DefaultExternalProxy)
 	adminHandler.RegisterRoutes(adminMux)
 	adminSrv := &http.Server{
 		Addr:    cfg.Proxy.AdminListen,
@@ -366,8 +378,8 @@ func errorsIs(err, target error) bool {
 }
 
 // regeneratePAC reads user and GFW rules, generates PAC, and writes it.
-func regeneratePAC(userPath, gfwPath, pacPath string) {
-	if err := gfw.RegeneratePAC(userPath, gfwPath, pacPath); err != nil {
+func regeneratePAC(userPath, gfwPath, pacPath string, defaultExternalProxy string) {
+	if err := gfw.RegeneratePAC(userPath, gfwPath, pacPath, defaultExternalProxy); err != nil {
 		log.Printf("[PAC] Regeneration failed: %v", err)
 	}
 }

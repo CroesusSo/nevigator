@@ -23,6 +23,13 @@ func parsePACResult(s string) Route {
 			return Route{Strategy: "SOCKS5", Address: tokens[1]}
 		}
 		return Route{Strategy: "DIRECT"}
+	case "EXTERNAL":
+		if len(tokens) >= 2 {
+			return Route{Strategy: "EXTERNAL", ExternalID: tokens[1]}
+		}
+		return Route{Strategy: "DIRECT"}
+	case "DEFAULT":
+		return Route{Strategy: "DEFAULT"}
 	case "DIRECT":
 		return Route{Strategy: "DIRECT"}
 	default:

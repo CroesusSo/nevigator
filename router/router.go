@@ -2,8 +2,10 @@ package router
 
 import (
 	"errors"
+	"fmt"
 	"log"
 	"net"
+	"sync"
 	"time"
 
 	"github.com/yourorg/proxy-pac/pac"
@@ -39,9 +41,12 @@ var socks5Errors = map[byte]error{
 
 // Router implements the routing logic.
 type Router struct {
-	cfg         pac.RouterConfig
-	tunIP       net.IP // resolved TUN IP
-	dialTimeout time.Duration
+	cfg            pac.RouterConfig
+	tunIP          net.IP // resolved TUN IP
+	dialTimeout    time.Duration
+	proxyMu        sync.RWMutex
+	proxyRegistry  map[string]pac.ExternalProxy // ID → proxy
+	defaultProxyID string
 }
 
 // NewRouter creates a Router with the given config.
@@ -56,6 +61,23 @@ func NewRouter(cfg pac.RouterConfig) (*Router, error) {
 	}
 	r.tunIP = cfg.TUNIP
 	return r, nil
+}
+
+// SetProxyRegistry updates the external proxy registry.
+func (r *Router) SetProxyRegistry(proxies []pac.ExternalProxy) {
+	r.proxyMu.Lock()
+	defer r.proxyMu.Unlock()
+	r.proxyRegistry = make(map[string]pac.ExternalProxy, len(proxies))
+	for _, p := range proxies {
+		r.proxyRegistry[p.ID] = p
+	}
+}
+
+// SetDefaultProxyID sets the default external proxy ID.
+func (r *Router) SetDefaultProxyID(id string) {
+	r.proxyMu.Lock()
+	defer r.proxyMu.Unlock()
+	r.defaultProxyID = id
 }
 
 // Route establishes an outbound connection according to the given route.
@@ -90,7 +112,38 @@ func (r *Router) dialWithRoute(dest string, route pac.Route) (net.Conn, error) {
 		if route.Address == "" {
 			return nil, ErrInvalidSOCKS5Address
 		}
-		return r.dialSOCKS5(dest, route.Address, dialer)
+		return r.dialSOCKS5WithAuth(dest, route.Address, dialer, nil)
+	case "EXTERNAL":
+		if route.ExternalID == "" {
+			return nil, ErrInvalidSOCKS5Address
+		}
+		r.proxyMu.RLock()
+		proxy, ok := r.proxyRegistry[route.ExternalID]
+		r.proxyMu.RUnlock()
+		if !ok {
+			return nil, fmt.Errorf("external proxy not found: %s", route.ExternalID)
+		}
+		auth := &socks5.Auth{Username: proxy.Username, Password: proxy.Password}
+		return r.dialSOCKS5WithAuth(dest, proxy.Address, dialer, auth)
+	case "DEFAULT":
+		if route.ExternalID != "" {
+			// Should not happen, but guard
+			return nil, ErrInvalidSOCKS5Address
+		}
+		r.proxyMu.RLock()
+		id := r.defaultProxyID
+		r.proxyMu.RUnlock()
+		if id == "" {
+			return nil, errors.New("no default external proxy configured")
+		}
+		r.proxyMu.RLock()
+		proxy, ok := r.proxyRegistry[id]
+		r.proxyMu.RUnlock()
+		if !ok {
+			return nil, fmt.Errorf("default external proxy not found: %s", id)
+		}
+		auth := &socks5.Auth{Username: proxy.Username, Password: proxy.Password}
+		return r.dialSOCKS5WithAuth(dest, proxy.Address, dialer, auth)
 	case "DIRECT":
 		return dialer.Dial("tcp", dest)
 	default:
@@ -98,29 +151,12 @@ func (r *Router) dialWithRoute(dest string, route pac.Route) (net.Conn, error) {
 	}
 }
 
-// dialSOCKS5 establishes a connection through a SOCKS5 server.
-func (r *Router) dialSOCKS5(destAddr, socksAddr string, dialer *net.Dialer) (net.Conn, error) {
-	conn, err := dialer.Dial("tcp", socksAddr)
+// dialSOCKS5WithAuth establishes a connection through a SOCKS5 server with optional authentication.
+func (r *Router) dialSOCKS5WithAuth(destAddr, socksAddr string, dialer *net.Dialer, auth *socks5.Auth) (net.Conn, error) {
+	// Use socks5.DialWithAuth to handle TCP dial + SOCKS5 handshake
+	conn, err := socks5.DialWithAuth("tcp", socksAddr, auth, r.dialTimeout)
 	if err != nil {
 		return nil, err
-	}
-
-	// Greeting: VER=5, NMETHODS=1, METHOD=NO_AUTH
-	_, err = conn.Write([]byte{socks5.Version, 0x01, socks5.AuthNone})
-	if err != nil {
-		conn.Close()
-		return nil, err
-	}
-
-	// Read method selection
-	resp := make([]byte, 2)
-	if err := socks5.ReadFull(conn, resp); err != nil {
-		conn.Close()
-		return nil, err
-	}
-	if resp[0] != socks5.Version || resp[1] != socks5.AuthNone {
-		conn.Close()
-		return nil, ErrSOCKS5AuthFailed
 	}
 
 	// Build CONNECT request: VER, CMD, RSV, ATYP, ADDR, PORT
@@ -144,7 +180,7 @@ func (r *Router) dialSOCKS5(destAddr, socksAddr string, dialer *net.Dialer) (net
 	}
 
 	// Read reply: VER, REP, RSV, ATYP, BND.ADDR, BND.PORT
-	resp = make([]byte, 4)
+	resp := make([]byte, 4)
 	if err := socks5.ReadFull(conn, resp); err != nil {
 		conn.Close()
 		return nil, err

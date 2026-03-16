@@ -7,7 +7,7 @@ import (
 )
 
 // RegeneratePAC reads user and GFW rules, generates PAC, and writes it atomically.
-func RegeneratePAC(userPath, gfwPath, pacPath string) error {
+func RegeneratePAC(userPath, gfwPath, pacPath string, defaultExternalProxy string) error {
 	userRules, err := LoadRules(userPath)
 	if err != nil {
 		log.Printf("[PAC] Failed to load user rules: %v", err)
@@ -19,10 +19,12 @@ func RegeneratePAC(userPath, gfwPath, pacPath string) error {
 		gfwRules = []Rule{}
 	}
 
-	content := GeneratePAC(userRules, gfwRules, FWMeta{
-		Source:    "gfwlist",
-		RuleCount: len(gfwRules),
-	})
+	meta := FWMeta{
+		Source:               "gfwlist",
+		RuleCount:            len(gfwRules),
+		DefaultExternalProxy: defaultExternalProxy,
+	}
+	content := GeneratePAC(userRules, gfwRules, meta)
 
 	tmpPath := pacPath + ".tmp"
 	if err := os.WriteFile(tmpPath, []byte(content), 0644); err != nil {

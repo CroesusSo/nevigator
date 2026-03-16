@@ -8,9 +8,10 @@ import (
 
 // FWMeta contains metadata about the GFW list.
 type FWMeta struct {
-	Source      string `json:"source"`
-	LastUpdated string `json:"lastUpdated"`
-	RuleCount   int    `json:"ruleCount"`
+	Source               string `json:"source"`
+	LastUpdated          string `json:"lastUpdated"`
+	RuleCount            int    `json:"ruleCount"`
+	DefaultExternalProxy string `json:"default_external_proxy,omitempty"`
 }
 
 // GeneratePAC merges user rules and GFW rules into PAC JavaScript.
@@ -42,7 +43,7 @@ func GeneratePAC(userRules []Rule, gfwRules []Rule, meta FWMeta) string {
 			if !r.Enabled {
 				continue
 			}
-			writeRuleCondition(&sb, r)
+			writeRuleCondition(&sb, r, meta)
 		}
 	}
 
@@ -53,7 +54,7 @@ func GeneratePAC(userRules []Rule, gfwRules []Rule, meta FWMeta) string {
 			if !r.Enabled {
 				continue
 			}
-			writeRuleCondition(&sb, r)
+			writeRuleCondition(&sb, r, meta)
 		}
 	}
 
@@ -64,14 +65,18 @@ func GeneratePAC(userRules []Rule, gfwRules []Rule, meta FWMeta) string {
 	return sb.String()
 }
 
-func writeRuleCondition(sb *strings.Builder, r Rule) {
+func writeRuleCondition(sb *strings.Builder, r Rule, meta FWMeta) {
 	cond := ruleToCondition(r)
 	if cond == "" {
 		return
 	}
 	route := r.Route
 	if route == "" {
-		route = "SOCKS5 127.0.0.1:1080"
+		if meta.DefaultExternalProxy != "" {
+			route = "DEFAULT"
+		} else {
+			route = "SOCKS5 127.0.0.1:1080"
+		}
 	}
 	fmt.Fprintf(sb, "  if (%s)\n", cond)
 	fmt.Fprintf(sb, "    return %q;\n", route)

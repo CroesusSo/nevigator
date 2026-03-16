@@ -3,12 +3,15 @@ package admin
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -17,17 +20,68 @@ import (
 
 	"github.com/yourorg/proxy-pac/gfw"
 	"github.com/yourorg/proxy-pac/pac"
+	"github.com/yourorg/proxy-pac/router"
+	"github.com/yourorg/proxy-pac/socks5"
 	"github.com/yourorg/proxy-pac/status"
 )
+
+// Helper functions for external proxy management
+
+// isLocalhost checks if host is a loopback address or name.
+func isLocalhost(host string) bool {
+	host = strings.ToLower(host)
+	return host == "127.0.0.1" || host == "localhost" || host == "::1"
+}
+
+// getPort extracts the port number from an address string.
+func getPort(addr string) (int, error) {
+	if addr == "" {
+		return 0, nil
+	}
+	_, portStr, err := net.SplitHostPort(addr)
+	if err != nil {
+		if strings.HasPrefix(addr, ":") {
+			portStr = strings.TrimPrefix(addr, ":")
+		} else {
+			return 0, err
+		}
+	}
+	return strconv.Atoi(portStr)
+}
+
+// validateProxyAddress checks that the external proxy address does not conflict
+// with this proxy's own listening ports when pointing to localhost.
+func validateProxyAddress(addr string, ourHTTP, ourSOCKS5, ourAdmin string) error {
+	host, portStr, err := net.SplitHostPort(addr)
+	if err != nil {
+		return fmt.Errorf("invalid address format: %w", err)
+	}
+	port, err := strconv.Atoi(portStr)
+	if err != nil {
+		return fmt.Errorf("invalid port: %w", err)
+	}
+	if !isLocalhost(host) {
+		return nil
+	}
+	httpPort, _ := getPort(ourHTTP)
+	socksPort, _ := getPort(ourSOCKS5)
+	adminPort, _ := getPort(ourAdmin)
+	if port == httpPort || port == socksPort || port == adminPort {
+		return fmt.Errorf("proxy address conflicts with this proxy's listener on a loopback interface")
+	}
+	return nil
+}
 
 // FullConfig mirrors the main package's Config for reading/writing the YAML.
 type FullConfig struct {
 	Proxy struct {
-		HTTPListen   string `yaml:"http_listen"`
-		SOCKS5Listen string `yaml:"socks5_listen"`
-		AdminListen  string `yaml:"admin_listen"`
-		PACPath      string `yaml:"pac_path"`
-		TUNDevice    string `yaml:"tun_device"`
+		HTTPListen           string              `yaml:"http_listen"`
+		SOCKS5Listen         string              `yaml:"socks5_listen"`
+		AdminListen          string              `yaml:"admin_listen"`
+		PACPath              string              `yaml:"pac_path"`
+		TUNDevice            string              `yaml:"tun_device"`
+		DefaultExternalProxy string              `yaml:"default_external_proxy"`
+		ExternalProxies      []pac.ExternalProxy `yaml:"external_proxies"`
 	} `yaml:"proxy"`
 	PAC struct {
 		LocalIP        string        `yaml:"local_ip"`
@@ -48,25 +102,29 @@ type FullConfig struct {
 
 // Handler provides admin UI and API endpoints.
 type Handler struct {
-	evaluator      *pac.Evaluator
-	pacPath        string
-	fetcher        *gfw.Fetcher
-	userPath       string
-	gfwPath        string
-	statusProvider status.StatusProvider
-	configPath     string // path to config YAML
+	evaluator            *pac.Evaluator
+	pacPath              string
+	fetcher              *gfw.Fetcher
+	userPath             string
+	gfwPath              string
+	statusProvider       status.StatusProvider
+	configPath           string         // path to config YAML
+	router               *router.Router // for proxy registry management
+	defaultExternalProxy string         // cached for PAC regeneration
 }
 
 // NewHandler creates a new admin handler.
-func NewHandler(evaluator *pac.Evaluator, pacPath string, fetcher *gfw.Fetcher, userPath, gfwPath, configPath string, statusProvider status.StatusProvider) *Handler {
+func NewHandler(evaluator *pac.Evaluator, pacPath string, fetcher *gfw.Fetcher, userPath, gfwPath, configPath string, statusProvider status.StatusProvider, router *router.Router, defaultExternalProxy string) *Handler {
 	return &Handler{
-		evaluator:      evaluator,
-		pacPath:        pacPath,
-		fetcher:        fetcher,
-		userPath:       userPath,
-		gfwPath:        gfwPath,
-		statusProvider: statusProvider,
-		configPath:     configPath,
+		evaluator:            evaluator,
+		pacPath:              pacPath,
+		fetcher:              fetcher,
+		userPath:             userPath,
+		gfwPath:              gfwPath,
+		statusProvider:       statusProvider,
+		configPath:           configPath,
+		router:               router,
+		defaultExternalProxy: defaultExternalProxy,
 	}
 }
 
@@ -83,6 +141,11 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/gfw/status", h.handleGFWStatus)
 	mux.HandleFunc("/api/gfw/fetch", h.handleGWFFetch)
 	mux.HandleFunc("/api/gfw/config", h.handleGFWConfig)
+	// Proxies API
+	mux.HandleFunc("/api/proxies/test", h.handleTestProxy)
+	mux.HandleFunc("/api/proxies/", h.handleProxyByID)
+	mux.HandleFunc("/api/proxies", h.handleProxies)
+	mux.HandleFunc("/api/config", h.handleConfig)
 	// Status API
 	mux.HandleFunc("/api/status", h.handleStatusAPI)
 	mux.HandleFunc("/api/connections", h.handleConnections)
@@ -171,7 +234,9 @@ func (h *Handler) handleUI(w http.ResponseWriter, r *http.Request) {
     <div class="tab" onclick="switchTab('connections')">Connections</div>
     <div class="tab" onclick="switchTab('rules')">Rules</div>
     <div class="tab" onclick="switchTab('gfw')">GFW List</div>
-    <div class="tab" onclick="switchTab('test')">Test URL</div>
+     <div class="tab" onclick="switchTab('test')">Test URL</div>
+     <div class="tab" onclick="switchTab('proxies')">Proxies</div>
+     <div class="tab" onclick="switchTab('settings')">Settings</div>
   </div>
   <div class="content">
 
@@ -306,13 +371,113 @@ func (h *Handler) handleUI(w http.ResponseWriter, r *http.Request) {
         </div>
         <pre id="testresult"></pre>
       </div>
-    </div>
+     </div>
 
-  </div>
-   <script>
-     let allRules = [];
-     let userRules = [];
-     let gfwRules = [];
+     <!-- Proxies Tab -->
+     <div id="panel-proxies" class="panel">
+       <div class="card">
+         <h3>External Proxies</h3>
+         <div class="form-row">
+           <label>Default External Proxy</label>
+           <select id="default-proxy-select">
+             <option value="">(none)</option>
+           </select>
+           <button class="btn btn-primary" onclick="saveDefaultProxy()">Set Default</button>
+         </div>
+         <p class="hint">The special PAC return value <code>DEFAULT</code> will use this proxy.</p>
+       </div>
+
+       <div class="card">
+         <h3>Upstream Proxies</h3>
+         <table>
+           <thead>
+             <tr>
+               <th>ID</th>
+               <th>Address</th>
+               <th>Auth</th>
+               <th>Actions</th>
+             </tr>
+           </thead>
+           <tbody id="proxies-body"></tbody>
+         </table>
+         <button class="btn btn-primary" style="margin-top:1rem;" onclick="showAddProxyModal()">Add Proxy</button>
+       </div>
+     </div>
+
+     <!-- Add Proxy Modal -->
+     <div id="add-proxy-modal" style="display:none; position:fixed; top:50%; left:50%; transform:translate(-50%,-50%); background:white; padding:2rem; border:1px solid #ccc; box-shadow:0 4px 16px rgba(0,0,0,0.2); z-index:1000; min-width:400px;">
+       <h3>Add External Proxy</h3>
+       <div class="form-row">
+         <label>ID</label>
+         <input id="new-proxy-id" placeholder="e.g., tor, myproxy">
+       </div>
+       <div class="form-row">
+         <label>Address</label>
+         <input id="new-proxy-addr" placeholder="127.0.0.1:1080">
+       </div>
+       <div class="form-row">
+         <label>Username</label>
+         <input id="new-proxy-user" placeholder="optional">
+       </div>
+       <div class="form-row">
+         <label>Password</label>
+         <input type="password" id="new-proxy-pass" placeholder="optional">
+       </div>
+       <div class="form-row">
+         <button class="btn btn-secondary" onclick="testNewProxy()">Test</button>
+         <span id="new-proxy-test-result" style="margin-left:1rem;"></span>
+       </div>
+       <div class="form-row" style="margin-top:1rem;">
+         <button class="btn btn-primary" id="save-new-proxy-btn" onclick="saveNewProxy()" disabled>Save</button>
+         <button class="btn" onclick="closeAddProxyModal()">Cancel</button>
+       </div>
+     </div>
+     <div id="add-proxy-overlay" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.5); z-index:999;" onclick="closeAddProxyModal()"></div>
+
+     <!-- Settings Tab -->
+     <div id="panel-settings" class="panel">
+       <div class="card">
+         <h3>Proxy Listeners</h3>
+         <div class="form-row">
+           <label>HTTP Proxy (listen)</label>
+           <input id="http-listen" value="0.0.0.0:8080">
+         </div>
+         <div class="form-row">
+           <label>SOCKS5 Proxy (listen)</label>
+           <input id="socks5-listen" value="0.0.0.0:1080">
+         </div>
+         <div class="form-row">
+           <label>Admin UI (listen)</label>
+           <input id="admin-listen" value="127.0.0.1:9090">
+         </div>
+       </div>
+
+       <div class="card">
+         <h3>Paths & Devices</h3>
+         <div class="form-row">
+           <label>PAC file path</label>
+           <input id="pac-path" value="/etc/proxy.pac">
+         </div>
+         <div class="form-row">
+           <label>TUN device</label>
+           <input id="tun-device" value="tun0">
+         </div>
+       </div>
+
+       <div class="card">
+         <h3>Save Changes</h3>
+         <p class="hint">Listener changes require a restart to take effect. Other changes are applied immediately.</p>
+         <button class="btn btn-primary" onclick="saveConfig()">Save Configuration</button>
+       </div>
+     </div>
+
+   </div>
+    <script>
+let allRules = [];
+let allProxies = [];
+let currentDefaultProxy = '';
+let userRules = [];
+let gfwRules = [];
      let editRowId = null;
      let gfwRowHeight = 0;
      let gfwVisibleStart = 0;
@@ -337,7 +502,7 @@ func (h *Handler) handleUI(w http.ResponseWriter, r *http.Request) {
        document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
        document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
        document.getElementById('panel-' + name).classList.add('active');
-       const tabMap = {summary: 'Summary', connections: 'Connections', rules: 'Rules', gfw: 'GFW List', test: 'Test URL'};
+       const tabMap = {summary: 'Summary', connections: 'Connections', rules: 'Rules', gfw: 'GFW List', test: 'Test URL', proxies: 'Proxies', settings: 'Settings'};
        document.querySelectorAll('.tab').forEach(t => {
          if (t.textContent === tabMap[name]) t.classList.add('active');
        });
@@ -345,6 +510,8 @@ func (h *Handler) handleUI(w http.ResponseWriter, r *http.Request) {
        if (name === 'connections') loadConnections();
        if (name === 'rules') loadRules();
        if (name === 'gfw') loadGFWStatus();
+  if (name === 'proxies') { loadProxies(); loadConfig(); }
+  if (name === 'settings') { loadConfig(); }
      }
 
      function fmtDuration(ms) {
@@ -467,8 +634,10 @@ func (h *Handler) handleUI(w http.ResponseWriter, r *http.Request) {
               ['domain_suffix','host_glob','url_glob','exact'].map(m => 
                 '<option value="' + m + '"' + (m === r.match ? ' selected' : '') + '>' + m + '</option>'
               ).join('') + '</select>';
+            let routeOptions = ['DIRECT','TUN','DEFAULT','SOCKS5 127.0.0.1:1080'];
+            allProxies.forEach(p => routeOptions.push('EXTERNAL ' + p.id));
             const routeSelect = '<select id="edit-route-' + r.id + '">' +
-              ['DIRECT','TUN','SOCKS5 127.0.0.1:1080'].map(rt => 
+              routeOptions.map(rt => 
                 '<option value="' + rt + '"' + (rt === r.route ? ' selected' : '') + '>' + rt + '</option>'
               ).join('') + '</select>';
             actionsCell = '<span class="edit-controls">' +
@@ -773,7 +942,259 @@ func (h *Handler) handleUI(w http.ResponseWriter, r *http.Request) {
        document.getElementById('testresult').textContent = JSON.stringify(data, null, 2);
      }
 
-     loadStatus();
+      // Proxy management functions
+      function loadProxies() {
+        fetch('/api/proxies').then(r => r.json()).then(data => {
+          allProxies = data;
+          renderProxies();
+          updateRouteOptions();
+        }).catch(err => {
+          console.error('Failed to load proxies:', err);
+        });
+      }
+
+      function renderProxies() {
+        const tbody = document.getElementById('proxies-body');
+        tbody.innerHTML = '';
+        allProxies.forEach(p => {
+          const tr = document.createElement('tr');
+          tr.innerHTML = '<td>' + p.id + '</td><td>' + p.address + '</td><td>' + (p.has_auth ? 'Yes' : 'No') + '</td><td><button class="btn btn-sm btn-secondary" onclick="editProxy(\'' + p.id + '\')">Edit</button> <button class="btn btn-sm btn-danger" onclick="deleteProxy(\'' + p.id + '\')">Delete</button> <button class="btn btn-sm btn-secondary" onclick="testProxy(\'' + p.id + '\')">Test</button></td>';
+          tbody.appendChild(tr);
+        });
+      }
+
+      function showAddProxyModal() {
+        document.getElementById('add-proxy-modal').style.display = 'block';
+        document.getElementById('add-proxy-overlay').style.display = 'block';
+        document.getElementById('new-proxy-id').value = '';
+        document.getElementById('new-proxy-addr').value = '';
+        document.getElementById('new-proxy-user').value = '';
+        document.getElementById('new-proxy-pass').value = '';
+        document.getElementById('new-proxy-test-result').textContent = '';
+        document.getElementById('save-new-proxy-btn').disabled = true;
+      }
+
+      function closeAddProxyModal() {
+        document.getElementById('add-proxy-modal').style.display = 'none';
+        document.getElementById('add-proxy-overlay').style.display = 'none';
+      }
+
+      function testNewProxy() {
+        const addr = document.getElementById('new-proxy-addr').value.trim();
+        const user = document.getElementById('new-proxy-user').value.trim();
+        const pass = document.getElementById('new-proxy-pass').value;
+        const resultSpan = document.getElementById('new-proxy-test-result');
+        if (!addr) {
+          resultSpan.textContent = 'Address required';
+          resultSpan.style.color = '#c00';
+          return;
+        }
+        resultSpan.textContent = 'Testing...';
+        resultSpan.style.color = '';
+        fetch('/api/proxies/test', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({address: addr, username: user, password: pass})
+        })
+        .then(r => r.json())
+        .then(data => {
+          if (data.success) {
+            resultSpan.textContent = 'Success!';
+            resultSpan.style.color = '#090';
+            document.getElementById('save-new-proxy-btn').disabled = false;
+          } else {
+            resultSpan.textContent = 'Failed: ' + data.error;
+            resultSpan.style.color = '#c00';
+            document.getElementById('save-new-proxy-btn').disabled = true;
+          }
+        })
+        .catch(e => {
+          resultSpan.textContent = 'Error: ' + e.message;
+          resultSpan.style.color = '#c00';
+          document.getElementById('save-new-proxy-btn').disabled = true;
+        });
+      }
+
+      function saveNewProxy() {
+        const id = document.getElementById('new-proxy-id').value.trim();
+        const addr = document.getElementById('new-proxy-addr').value.trim();
+        const user = document.getElementById('new-proxy-user').value.trim();
+        const pass = document.getElementById('new-proxy-pass').value;
+        if (!id || !addr) {
+          alert('ID and Address are required');
+          return;
+        }
+        fetch('/api/proxies', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({id: id, address: addr, username: user, password: pass})
+        })
+        .then(r => {
+          if (r.ok) {
+            closeAddProxyModal();
+            loadProxies();
+          } else {
+            return r.text().then(txt => { throw new Error(txt); });
+          }
+          return r;
+        })
+        .catch(e => alert('Failed to add: ' + e.message));
+      }
+
+      function editProxy(id) {
+        const p = allProxies.find(x => x.id === id);
+        if (!p) return;
+        const newId = prompt('Edit ID (cannot change):', p.id);
+        if (newId === null) return;
+        const newAddr = prompt('Address:', p.address);
+        if (newAddr === null) return;
+        const newUser = prompt('Username (leave unchanged if empty):', p.username || '');
+        const newPass = prompt('Password (leave unchanged if empty):', '');
+        const payload = { address: newAddr };
+        if (newUser !== '') payload.username = newUser;
+        if (newPass !== '') payload.password = newPass;
+        fetch('/api/proxies/' + encodeURIComponent(id), {
+          method: 'PUT',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify(payload)
+        })
+        .then(r => {
+          if (r.ok) return r.json();
+          return r.text().then(txt => { throw new Error(txt); });
+        })
+        .then(data => {
+          loadProxies();
+          alert('Updated');
+        })
+        .catch(e => alert('Error: ' + e.message));
+      }
+
+      function deleteProxy(id) {
+        if (!confirm('Delete proxy ' + id + '?')) return;
+        fetch('/api/proxies/' + encodeURIComponent(id), { method: 'DELETE' })
+          .then(r => {
+            if (r.ok) {
+              loadProxies();
+            } else {
+              r.text().then(txt => alert('Failed: ' + txt));
+            }
+          })
+          .catch(e => alert('Error: ' + e.message));
+      }
+
+      function testProxy(id) {
+        fetch('/api/proxies/' + encodeURIComponent(id) + '/test', { method: 'POST' })
+          .then(r => r.json())
+          .then(data => {
+            if (data.success) {
+              alert('Proxy test succeeded');
+            } else {
+              alert('Proxy test failed: ' + data.error);
+            }
+          })
+          .catch(e => alert('Error: ' + e.message));
+      }
+
+      function loadConfig() {
+        fetch('/api/config').then(r => r.json()).then(cfg => {
+          currentDefaultProxy = cfg.default_external_proxy || '';
+          document.getElementById('default-proxy-select').value = currentDefaultProxy;
+          if (document.getElementById('http-listen')) document.getElementById('http-listen').value = cfg.http_listen || '';
+          if (document.getElementById('socks5-listen')) document.getElementById('socks5-listen').value = cfg.socks5_listen || '';
+          if (document.getElementById('admin-listen')) document.getElementById('admin-listen').value = cfg.admin_listen || '';
+          if (document.getElementById('pac-path')) document.getElementById('pac-path').value = cfg.pac_path || '';
+          if (document.getElementById('tun-device')) document.getElementById('tun-device').value = cfg.tun_device || '';
+        }).catch(err => {
+          console.error('Failed to load config:', err);
+        });
+      }
+
+      function saveConfig() {
+        const payload = {
+          default_external_proxy: document.getElementById('default-proxy-select').value,
+          http_listen: document.getElementById('http-listen').value,
+          socks5_listen: document.getElementById('socks5-listen').value,
+          admin_listen: document.getElementById('admin-listen').value,
+          pac_path: document.getElementById('pac-path').value,
+          tun_device: document.getElementById('tun-device').value
+        };
+        fetch('/api/config', {
+          method: 'PUT',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify(payload)
+        })
+        .then(r => r.json())
+        .then(data => {
+          alert('Config saved' + (data.restart_required ? ' (restart required for listeners)' : ''));
+        })
+        .catch(e => alert('Error: ' + e.message));
+      }
+
+      function updateRouteOptions() {
+        const base = ['DIRECT','TUN','DEFAULT','SOCKS5 127.0.0.1:1080'];
+        allProxies.forEach(p => base.push('EXTERNAL ' + p.id));
+        const addSelect = document.getElementById('new-route');
+        if (addSelect) {
+          addSelect.innerHTML = base.map(rt => '<option value="' + rt + '">' + rt + '</option>').join('');
+        }
+        // For edit selects, we could also update, but they are dynamic; simplest is to reload page or use edit prompt
+      }
+
+      // Override loadProxies to also populate default proxy select
+      loadProxies = function() {
+        fetch('/api/proxies').then(r => r.json()).then(data => {
+          allProxies = data;
+          renderProxies();
+          updateRouteOptions();
+          const sel = document.getElementById('default-proxy-select');
+          if (sel) {
+            sel.innerHTML = '<option value="">(none)</option>';
+            data.forEach(p => {
+              const opt = document.createElement('option');
+              opt.value = p.id;
+              opt.textContent = p.id;
+              sel.appendChild(opt);
+            });
+            if (currentDefaultProxy) sel.value = currentDefaultProxy;
+          }
+        }).catch(err => console.error('Failed to load proxies:', err));
+      };
+
+      function saveDefaultProxy() {
+        const val = document.getElementById('default-proxy-select').value;
+        fetch('/api/config', {
+          method: 'PUT',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({default_external_proxy: val})
+        })
+        .then(r => r.json())
+        .then(data => {
+          currentDefaultProxy = val;
+          alert('Default proxy saved');
+        })
+        .catch(e => alert('Error: ' + e.message));
+      }
+
+      function saveConfig() {
+        const payload = {
+          default_external_proxy: document.getElementById('default-proxy-select').value,
+          http_listen: document.getElementById('http-listen').value,
+          socks5_listen: document.getElementById('socks5-listen').value,
+          admin_listen: document.getElementById('admin-listen').value,
+          pac_path: document.getElementById('pac-path').value,
+          tun_device: document.getElementById('tun-device').value
+        };
+        fetch('/api/config', {
+          method: 'PUT',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify(payload)
+        })
+        .then(r => r.json())
+        .then(data => {
+          alert('Config saved' + (data.restart_required ? ' (restart required for listeners)' : ''));
+        })
+        .catch(e => alert('Error: ' + e.message));
+      }
      setInterval(loadStatus, 5000);
      setInterval(function() {
        if (document.getElementById('panel-connections').classList.contains('active')) {
@@ -1276,7 +1697,415 @@ func (h *Handler) regeneratePAC() {
 	if h.userPath == "" || h.gfwPath == "" || h.pacPath == "" {
 		return
 	}
-	if err := gfw.RegeneratePAC(h.userPath, h.gfwPath, h.pacPath); err != nil {
+	if err := gfw.RegeneratePAC(h.userPath, h.gfwPath, h.pacPath, h.defaultExternalProxy); err != nil {
 		log.Printf("[Admin] PAC regeneration failed: %v", err)
 	}
+}
+
+// writeFullConfig writes the FullConfig to h.configPath atomically.
+func (h *Handler) writeFullConfig(cfg FullConfig) error {
+	out, err := yaml.Marshal(&cfg)
+	if err != nil {
+		return fmt.Errorf("marshal config: %w", err)
+	}
+	tmpPath := h.configPath + ".tmp"
+	if err := os.WriteFile(tmpPath, out, 0644); err != nil {
+		return fmt.Errorf("write config tmp: %w", err)
+	}
+	if err := os.Rename(tmpPath, h.configPath); err != nil {
+		os.Remove(tmpPath)
+		return fmt.Errorf("rename config: %w", err)
+	}
+	return nil
+}
+
+// handleProxies dispatches GET (list) and POST (create) on /api/proxies.
+func (h *Handler) handleProxies(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		h.handleListProxies(w, r)
+	case http.MethodPost:
+		h.handleCreateProxy(w, r)
+	default:
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+// handleListProxies returns the list of external proxies without passwords.
+func (h *Handler) handleListProxies(w http.ResponseWriter, r *http.Request) {
+	data, err := os.ReadFile(h.configPath)
+	if err != nil {
+		log.Printf("[Admin] Failed to read config for listing proxies: %v", err)
+		http.Error(w, "Cannot read config", http.StatusInternalServerError)
+		return
+	}
+	var cfg FullConfig
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
+		log.Printf("[Admin] Failed to parse config for listing proxies: %v", err)
+		http.Error(w, "Cannot parse config", http.StatusInternalServerError)
+		return
+	}
+	proxies := make([]map[string]interface{}, len(cfg.Proxy.ExternalProxies))
+	for i, p := range cfg.Proxy.ExternalProxies {
+		proxies[i] = map[string]interface{}{
+			"id":       p.ID,
+			"address":  p.Address,
+			"has_auth": (p.Username != "" || p.Password != ""),
+		}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(proxies)
+}
+
+// handleCreateProxy adds a new external proxy.
+func (h *Handler) handleCreateProxy(w http.ResponseWriter, r *http.Request) {
+	var newProxy pac.ExternalProxy
+	if err := json.NewDecoder(r.Body).Decode(&newProxy); err != nil {
+		http.Error(w, "Invalid JSON", http.StatusBadRequest)
+		return
+	}
+	if newProxy.ID == "" {
+		http.Error(w, "id is required", http.StatusBadRequest)
+		return
+	}
+	if newProxy.Address == "" {
+		http.Error(w, "address is required", http.StatusBadRequest)
+		return
+	}
+	// Validate address format and loop prevention
+	status := h.statusProvider.Status()
+	if err := validateProxyAddress(newProxy.Address, status.HTTPListen, status.SOCKS5Listen, status.AdminListen); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	// Reserved ID check
+	switch newProxy.ID {
+	case "DIRECT", "TUN", "DEFAULT":
+		http.Error(w, "reserved proxy id", http.StatusBadRequest)
+		return
+	}
+	// Read config
+	data, err := os.ReadFile(h.configPath)
+	if err != nil {
+		log.Printf("[Admin] Failed to read config for create proxy: %v", err)
+		http.Error(w, "Cannot read config", http.StatusInternalServerError)
+		return
+	}
+	var cfg FullConfig
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
+		log.Printf("[Admin] Failed to parse config for create proxy: %v", err)
+		http.Error(w, "Cannot parse config", http.StatusInternalServerError)
+		return
+	}
+	// Duplicate ID check
+	for _, p := range cfg.Proxy.ExternalProxies {
+		if p.ID == newProxy.ID {
+			http.Error(w, "duplicate proxy id", http.StatusConflict)
+			return
+		}
+	}
+	cfg.Proxy.ExternalProxies = append(cfg.Proxy.ExternalProxies, newProxy)
+	if err := h.writeFullConfig(cfg); err != nil {
+		log.Printf("[Admin] Failed to write config after create proxy: %v", err)
+		http.Error(w, "Failed to save config", http.StatusInternalServerError)
+		return
+	}
+	// Update router registry
+	h.router.SetProxyRegistry(cfg.Proxy.ExternalProxies)
+	// Respond
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"id":       newProxy.ID,
+		"address":  newProxy.Address,
+		"has_auth": (newProxy.Username != "" || newProxy.Password != ""),
+	})
+}
+
+// handleProxyByID handles /api/proxies/:id (PUT, DELETE) and /api/proxies/:id/test (POST test).
+func (h *Handler) handleProxyByID(w http.ResponseWriter, r *http.Request) {
+	path := strings.TrimPrefix(r.URL.Path, "/api/proxies/")
+	parts := strings.Split(path, "/")
+	if len(parts) == 0 {
+		http.Error(w, "proxy id required", http.StatusBadRequest)
+		return
+	}
+	id := parts[0]
+	if len(parts) > 1 && parts[1] == "test" && r.Method == http.MethodPost {
+		h.handleTestProxyByID(w, r, id)
+		return
+	}
+	switch r.Method {
+	case http.MethodPut:
+		h.handleUpdateProxy(w, r, id)
+	case http.MethodDelete:
+		h.handleDeleteProxy(w, r, id)
+	default:
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+// handleTestProxyByID tests connectivity to a saved proxy.
+func (h *Handler) handleTestProxyByID(w http.ResponseWriter, r *http.Request, id string) {
+	data, err := os.ReadFile(h.configPath)
+	if err != nil {
+		http.Error(w, "Cannot read config", http.StatusInternalServerError)
+		return
+	}
+	var cfg FullConfig
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
+		http.Error(w, "Cannot parse config", http.StatusInternalServerError)
+		return
+	}
+	var proxy pac.ExternalProxy
+	found := false
+	for _, p := range cfg.Proxy.ExternalProxies {
+		if p.ID == id {
+			proxy = p
+			found = true
+			break
+		}
+	}
+	if !found {
+		http.Error(w, "Proxy not found", http.StatusNotFound)
+		return
+	}
+	timeout := 5 * time.Second
+	conn, err := socks5.DialWithAuth("tcp", proxy.Address, &socks5.Auth{Username: proxy.Username, Password: proxy.Password}, timeout)
+	if err != nil {
+		json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "error": err.Error()})
+		return
+	}
+	conn.Close()
+	json.NewEncoder(w).Encode(map[string]interface{}{"success": true})
+}
+
+// handleTestProxy tests an arbitrary unsaved proxy configuration.
+func (h *Handler) handleTestProxy(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Address  string `json:"address"`
+		Username string `json:"username"`
+		Password string `json:"password"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid JSON", http.StatusBadRequest)
+		return
+	}
+	if req.Address == "" {
+		http.Error(w, "address required", http.StatusBadRequest)
+		return
+	}
+	timeout := 5 * time.Second
+	conn, err := socks5.DialWithAuth("tcp", req.Address, &socks5.Auth{Username: req.Username, Password: req.Password}, timeout)
+	if err != nil {
+		json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "error": err.Error()})
+		return
+	}
+	conn.Close()
+	json.NewEncoder(w).Encode(map[string]interface{}{"success": true})
+}
+
+// handleUpdateProxy updates an existing external proxy (partial update).
+func (h *Handler) handleUpdateProxy(w http.ResponseWriter, r *http.Request, id string) {
+	// Read config
+	data, err := os.ReadFile(h.configPath)
+	if err != nil {
+		log.Printf("[Admin] Failed to read config for update proxy: %v", err)
+		http.Error(w, "Cannot read config", http.StatusInternalServerError)
+		return
+	}
+	var cfg FullConfig
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
+		log.Printf("[Admin] Failed to parse config for update proxy: %v", err)
+		http.Error(w, "Cannot parse config", http.StatusInternalServerError)
+		return
+	}
+	// Find proxy
+	idx := -1
+	for i, p := range cfg.Proxy.ExternalProxies {
+		if p.ID == id {
+			idx = i
+			break
+		}
+	}
+	if idx == -1 {
+		http.Error(w, "Proxy not found", http.StatusNotFound)
+		return
+	}
+	var upd struct {
+		Address  string `json:"address"`
+		Username string `json:"username"`
+		Password string `json:"password"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&upd); err != nil {
+		http.Error(w, "Invalid JSON", http.StatusBadRequest)
+		return
+	}
+	proxy := cfg.Proxy.ExternalProxies[idx]
+	if upd.Address != "" {
+		status := h.statusProvider.Status()
+		if err := validateProxyAddress(upd.Address, status.HTTPListen, status.SOCKS5Listen, status.AdminListen); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		proxy.Address = upd.Address
+	}
+	if upd.Username != "" {
+		proxy.Username = upd.Username
+	}
+	if upd.Password != "" {
+		proxy.Password = upd.Password
+	}
+	cfg.Proxy.ExternalProxies[idx] = proxy
+	if err := h.writeFullConfig(cfg); err != nil {
+		log.Printf("[Admin] Failed to write config after update proxy: %v", err)
+		http.Error(w, "Failed to save config", http.StatusInternalServerError)
+		return
+	}
+	h.router.SetProxyRegistry(cfg.Proxy.ExternalProxies)
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(proxy)
+}
+
+// handleDeleteProxy removes an external proxy by ID.
+func (h *Handler) handleDeleteProxy(w http.ResponseWriter, r *http.Request, id string) {
+	data, err := os.ReadFile(h.configPath)
+	if err != nil {
+		log.Printf("[Admin] Failed to read config for delete proxy: %v", err)
+		http.Error(w, "Cannot read config", http.StatusInternalServerError)
+		return
+	}
+	var cfg FullConfig
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
+		log.Printf("[Admin] Failed to parse config for delete proxy: %v", err)
+		http.Error(w, "Cannot parse config", http.StatusInternalServerError)
+		return
+	}
+	newProxies := make([]pac.ExternalProxy, 0, len(cfg.Proxy.ExternalProxies))
+	found := false
+	for _, p := range cfg.Proxy.ExternalProxies {
+		if p.ID == id {
+			found = true
+			continue
+		}
+		newProxies = append(newProxies, p)
+	}
+	if !found {
+		http.Error(w, "Proxy not found", http.StatusNotFound)
+		return
+	}
+	cfg.Proxy.ExternalProxies = newProxies
+	if err := h.writeFullConfig(cfg); err != nil {
+		log.Printf("[Admin] Failed to write config after delete proxy: %v", err)
+		http.Error(w, "Failed to save config", http.StatusInternalServerError)
+		return
+	}
+	h.router.SetProxyRegistry(cfg.Proxy.ExternalProxies)
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleConfig dispatches GET and PUT on /api/config.
+func (h *Handler) handleConfig(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		h.handleGetConfig(w, r)
+	case http.MethodPut:
+		h.handlePutConfig(w, r)
+	default:
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+// handleGetConfig returns current proxy configuration (listeners, pac_path, tun_device, default_external_proxy).
+func (h *Handler) handleGetConfig(w http.ResponseWriter, r *http.Request) {
+	status := h.statusProvider.Status()
+	cfg := struct {
+		HTTPListen           string `json:"http_listen"`
+		SOCKS5Listen         string `json:"socks5_listen"`
+		AdminListen          string `json:"admin_listen"`
+		PACPath              string `json:"pac_path"`
+		TUNDevice            string `json:"tun_device"`
+		DefaultExternalProxy string `json:"default_external_proxy"`
+	}{
+		HTTPListen:   status.HTTPListen,
+		SOCKS5Listen: status.SOCKS5Listen,
+		AdminListen:  status.AdminListen,
+	}
+	// Read config file to get PACPath, TUNDevice, DefaultExternalProxy
+	data, err := os.ReadFile(h.configPath)
+	if err == nil {
+		var full FullConfig
+		if err := yaml.Unmarshal(data, &full); err == nil {
+			cfg.PACPath = full.Proxy.PACPath
+			cfg.TUNDevice = full.Proxy.TUNDevice
+			cfg.DefaultExternalProxy = full.Proxy.DefaultExternalProxy
+		}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(cfg)
+}
+
+// handlePutConfig updates the configuration (partial update).
+func (h *Handler) handlePutConfig(w http.ResponseWriter, r *http.Request) {
+	var upd struct {
+		HTTPListen           string `json:"http_listen"`
+		SOCKS5Listen         string `json:"socks5_listen"`
+		AdminListen          string `json:"admin_listen"`
+		PACPath              string `json:"pac_path"`
+		TUNDevice            string `json:"tun_device"`
+		DefaultExternalProxy string `json:"default_external_proxy"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&upd); err != nil {
+		http.Error(w, "Invalid JSON", http.StatusBadRequest)
+		return
+	}
+	// Load full config
+	data, err := os.ReadFile(h.configPath)
+	if err != nil {
+		log.Printf("[Admin] Failed to read config for put: %v", err)
+		http.Error(w, "Cannot read config", http.StatusInternalServerError)
+		return
+	}
+	var cfg FullConfig
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
+		log.Printf("[Admin] Failed to parse config: %v", err)
+		http.Error(w, "Cannot parse config", http.StatusInternalServerError)
+		return
+	}
+	restartRequired := false
+	if upd.HTTPListen != "" {
+		cfg.Proxy.HTTPListen = upd.HTTPListen
+		restartRequired = true
+	}
+	if upd.SOCKS5Listen != "" {
+		cfg.Proxy.SOCKS5Listen = upd.SOCKS5Listen
+		restartRequired = true
+	}
+	if upd.AdminListen != "" {
+		cfg.Proxy.AdminListen = upd.AdminListen
+		restartRequired = true
+	}
+	if upd.PACPath != "" {
+		cfg.Proxy.PACPath = upd.PACPath
+	}
+	if upd.TUNDevice != "" {
+		cfg.Proxy.TUNDevice = upd.TUNDevice
+	}
+	if upd.DefaultExternalProxy != "" && upd.DefaultExternalProxy != cfg.Proxy.DefaultExternalProxy {
+		cfg.Proxy.DefaultExternalProxy = upd.DefaultExternalProxy
+		h.router.SetDefaultProxyID(upd.DefaultExternalProxy)
+		h.defaultExternalProxy = upd.DefaultExternalProxy
+		h.regeneratePAC()
+	}
+	// Write updated config
+	if err := h.writeFullConfig(cfg); err != nil {
+		log.Printf("[Admin] Failed to write config: %v", err)
+		http.Error(w, "Failed to save config", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"status":           "ok",
+		"restart_required": restartRequired,
+	})
 }

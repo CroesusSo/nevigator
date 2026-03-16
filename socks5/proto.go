@@ -24,5 +24,12 @@ const (
 
 	// Authentication methods
 	AuthNone         = 0x00
+	AuthUserPass     = 0x02
 	AuthNoAcceptable = 0xFF
 )
+
+// Auth holds credentials for SOCKS5 username/password authentication.
+type Auth struct {
+	Username string
+	Password string
+}

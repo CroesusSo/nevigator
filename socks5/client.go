@@ -1,0 +1,88 @@
+package socks5
+
+import (
+	"fmt"
+	"net"
+	"time"
+)
+
+// DialWithAuth establishes a TCP connection to the SOCKS5 server and performs
+// the handshake, including optional username/password authentication.
+// On success, it returns the connected net.Conn ready for CONNECT request.
+func DialWithAuth(network, addr string, auth *Auth, timeout time.Duration) (net.Conn, error) {
+	dialer := &net.Dialer{Timeout: timeout}
+	conn, err := dialer.Dial(network, addr)
+	if err != nil {
+		return nil, fmt.Errorf("dial: %w", err)
+	}
+
+	// Build method list
+	methods := []byte{}
+	if auth != nil && (auth.Username != "" || auth.Password != "") {
+		methods = []byte{AuthNone, AuthUserPass}
+	} else {
+		methods = []byte{AuthNone}
+	}
+
+	// Write greeting: VER, NMETHODS, METHODS
+	if _, err := conn.Write([]byte{Version, byte(len(methods))}); err != nil {
+		conn.Close()
+		return nil, fmt.Errorf("write version/nmeth: %w", err)
+	}
+	if len(methods) > 0 {
+		if _, err := conn.Write(methods); err != nil {
+			conn.Close()
+			return nil, fmt.Errorf("write methods: %w", err)
+		}
+	}
+
+	// Read response: VER, METHOD
+	resp := make([]byte, 2)
+	if err := ReadFull(conn, resp); err != nil {
+		conn.Close()
+		return nil, fmt.Errorf("read response: %w", err)
+	}
+	if resp[0] != Version {
+		conn.Close()
+		return nil, fmt.Errorf("unexpected version: %d", resp[0])
+	}
+	chosen := resp[1]
+
+	switch chosen {
+	case AuthNone:
+		// ok
+	case AuthUserPass:
+		if auth == nil || (auth.Username == "" && auth.Password == "") {
+			conn.Close()
+			return nil, fmt.Errorf("server requires username/password but none provided")
+		}
+		// Send credentials: VER, ULEN, UNAME, PLEN, PASSWD
+		u := []byte(auth.Username)
+		p := []byte(auth.Password)
+		cred := make([]byte, 1+1+len(u)+1+len(p))
+		cred[0] = 0x01 // VER
+		cred[1] = byte(len(u))
+		copy(cred[2:], u)
+		offset := 2 + len(u)
+		cred[offset] = byte(len(p))
+		copy(cred[offset+1:], p)
+		if _, err := conn.Write(cred); err != nil {
+			conn.Close()
+			return nil, fmt.Errorf("write credentials: %w", err)
+		}
+		authResp := make([]byte, 2)
+		if err := ReadFull(conn, authResp); err != nil {
+			conn.Close()
+			return nil, fmt.Errorf("read auth response: %w", err)
+		}
+		if authResp[1] != REPSuccess {
+			conn.Close()
+			return nil, fmt.Errorf("authentication failed: code %d", authResp[1])
+		}
+	default:
+		conn.Close()
+		return nil, fmt.Errorf("unsupported auth method: %d", chosen)
+	}
+
+	return conn, nil
+}

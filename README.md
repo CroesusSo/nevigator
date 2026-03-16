@@ -10,6 +10,7 @@ A high-performance proxy server that uses PAC (Proxy Auto-Config) scripts to rou
 - Automatic fallback to DIRECT if chosen route fails
 - Hot-reload PAC file via file watcher or admin API
 - Web admin UI for editing, testing, and reloading PAC
+- External proxy registry: define upstream SOCKS5 proxies with optional credentials; use PAC values `EXTERNAL <id>` or `DEFAULT` to route through them
 - Lightweight, single binary
 
 ## Build
@@ -50,13 +51,19 @@ Open `http://localhost:9090` in browser to:
 - Save changes and reload
 - Test a URL to see which route is chosen
 - View status
+- **Proxies tab**: manage external SOCKS5 proxies, set default, test connectivity
+- **Settings tab**: view and edit listening addresses, PAC path, and TUN device
 
 ## PAC Script
 
 PAC must define `FindProxyForURL(url, host)` and return one of:
 - `"TUN"` - route via TUN device
 - `"SOCKS5 host:port"` - route via SOCKS5 upstream
+- `"EXTERNAL <id>"` - route via an external proxy defined in the main configuration
+- `"DEFAULT"` - use the default external proxy (if configured)
 - `"DIRECT"` - system default route
+
+**External Proxies** are defined in the main `config.yaml` under `proxy.external_proxies`. Each has an `id`, `address`, and optional `username`/`password`.
 
 Example:
 
