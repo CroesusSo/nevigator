@@ -1,0 +1,130 @@
+# PAC-Enabled Proxy with TUN Support
+
+A high-performance proxy server that uses PAC (Proxy Auto-Config) scripts to route traffic through TUN devices (VPN) or SOCKS5 upstreams, with automatic fallback to system default route.
+
+## Features
+
+- HTTP CONNECT and SOCKS5 proxy support
+- PAC script evaluation via goja JavaScript runtime
+- Route strategies: TUN (bind to TUN interface IP), SOCKS5 upstream, DIRECT (system default)
+- Automatic fallback to DIRECT if chosen route fails
+- Hot-reload PAC file via file watcher or admin API
+- Web admin UI for editing, testing, and reloading PAC
+- Lightweight, single binary
+
+## Build
+
+```bash
+go build -o proxy-pac ./cmd/proxy-pac
+```
+
+## Configuration
+
+Create a config file (e.g., `config.yaml`):
+
+```yaml
+proxy:
+  http_listen: 0.0.0.0:8080
+  socks5_listen: 0.0.0.0:1080
+  admin_listen: 127.0.0.1:9090
+  pac_path: /etc/proxy.pac
+  tun_device: tun0
+
+pac:
+  local_ip: ""            # auto from tun0
+  dns_timeout: 500ms
+  eval_timeout: 200ms
+  enable_dns_cache: true
+```
+
+Run:
+
+```bash
+./proxy-pac --config config.yaml
+```
+
+## Admin UI
+
+Open `http://localhost:9090` in browser to:
+- View/edit PAC file
+- Save changes and reload
+- Test a URL to see which route is chosen
+- View status
+
+## PAC Script
+
+PAC must define `FindProxyForURL(url, host)` and return one of:
+- `"TUN"` - route via TUN device
+- `"SOCKS5 host:port"` - route via SOCKS5 upstream
+- `"DIRECT"` - system default route
+
+Example:
+
+```javascript
+function FindProxyForURL(url, host) {
+  if (dnsDomainIs(host, ".internal.example")) {
+    return "TUN";
+  }
+  if (shExpMatch(host, "*.onion")) {
+    return "SOCKS5 127.0.0.1:9050";
+  }
+  return "DIRECT";
+}
+```
+
+## How It Works
+
+1. Client connects via HTTP CONNECT or SOCKS5
+2. Proxy asks PAC evaluator for route based on destination host
+3. Router establishes outbound connection according to route:
+   - TUN: binds socket to TUN interface IP
+   - SOCKS5: connects to upstream and performs SOCKS5 handshake
+   - DIRECT: normal net.Dial (uses OS routing)
+4. If route fails (except DIRECT), automatically retries with DIRECT
+5. Data is relayed between client and outbound
+
+## Supported PAC Built-ins
+
+- `shExpMatch(str, pattern)`
+- `dnsDomainIs(domain, pattern)`
+- `isInNet(ip, pattern, mask)`
+- `myIpAddress()` (returns configured TUN IP)
+- `dnsResolve(hostname)` (with timeout and cache)
+- `isResolvable(hostname)`
+
+## Deployment
+
+### Systemd
+
+See `contrib/proxy-pac.service`.
+
+### Docker
+
+The container needs access to the host's TUN device if you want to use TUN routes. The proxy only needs to read the interface IP; it does not manipulate the TUN directly. Mount the config and PAC files as volumes.
+
+## Testing
+
+Unit tests: `go test ./...`
+
+Manual test with curl:
+
+```bash
+curl -x http://localhost:8080 http://example.com
+```
+
+Or SOCKS5:
+
+```bash
+curl --socks5 localhost:1080 http://example.com
+```
+
+## Limitations
+
+- TCP only (no UDP)
+- No upstream HTTP proxy support (only SOCKS5)
+- No client authentication
+- PAC evaluation per request creates a fresh JS VM (~100-200µs overhead)
+
+## License
+
+MIT

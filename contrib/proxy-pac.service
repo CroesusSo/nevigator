@@ -1,0 +1,15 @@
+[Unit]
+Description=PAC-enabled proxy with TUN support
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=proxy
+Group=proxy
+ExecStart=/usr/local/bin/proxy-pac --config /etc/proxy-pac.yaml
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

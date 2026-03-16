@@ -1,0 +1,12 @@
+proxy:
+  http_listen: 0.0.0.0:8080
+  socks5_listen: 0.0.0.0:1080
+  admin_listen: 127.0.0.1:9090
+  pac_path: /etc/proxy.pac
+  tun_device: tun0
+
+pac:
+  local_ip: ""            # auto-discovered from tun0
+  dns_timeout: 500ms
+  eval_timeout: 200ms
+  enable_dns_cache: true
