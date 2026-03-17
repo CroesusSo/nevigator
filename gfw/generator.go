@@ -75,7 +75,7 @@ func writeRuleCondition(sb *strings.Builder, r Rule, meta FWMeta) {
 		if meta.DefaultExternalProxy != "" {
 			route = "DEFAULT"
 		} else {
-			route = "SOCKS5 127.0.0.1:1080"
+			route = "DIRECT"
 		}
 	}
 	fmt.Fprintf(sb, "  if (%s)\n", cond)

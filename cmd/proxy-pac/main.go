@@ -39,13 +39,14 @@ type Config struct {
 		EnableDNSCache bool          `yaml:"enable_dns_cache"`
 	} `yaml:"pac"`
 	GFW struct {
-		SourceURL      string        `yaml:"source_url"`
-		LocalRulesPath string        `yaml:"local_rules_path"`
-		UserRulesPath  string        `yaml:"user_rules_path"`
-		UseTUN         bool          `yaml:"use_tun"`
-		UpdateInterval time.Duration `yaml:"update_interval"`
-		FetchOnStartup bool          `yaml:"fetch_on_startup"`
-		HTTPTimeout    time.Duration `yaml:"http_timeout"`
+		SourceURL        string        `yaml:"source_url"`
+		LocalRulesPath   string        `yaml:"local_rules_path"`
+		UserRulesPath    string        `yaml:"user_rules_path"`
+		UseTUN           bool          `yaml:"use_tun"`
+		UpdateInterval   time.Duration `yaml:"update_interval"`
+		FetchOnStartup   bool          `yaml:"fetch_on_startup"`
+		HTTPTimeout      time.Duration `yaml:"http_timeout"`
+		CustomDNSServers []string      `yaml:"custom_dns_servers"` // Optional custom DNS for GFW fetcher
 	} `yaml:"gfw"`
 }
 
@@ -148,11 +149,11 @@ func resolveConfigPath(confFlag string) (string, bool) {
 
 // generateDefaultConfig creates a default config file at the given path.
 func generateDefaultConfig(configPath string) error {
-	if err := os.MkdirAll(filepath.Dir(configPath), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
 		return err
 	}
 	pacPath := filepath.Join(filepath.Dir(configPath), "proxy.pac")
-	if err := os.WriteFile(configPath, []byte(defaultConfigYAML(pacPath)), 0644); err != nil {
+	if err := os.WriteFile(configPath, []byte(defaultConfigYAML(pacPath)), 0o644); err != nil {
 		return err
 	}
 	log.Printf("Generated default config: %s", configPath)
@@ -216,7 +217,7 @@ func main() {
 	}
 	// Set default GFW source URL if not configured
 	if cfg.GFW.SourceURL == "" {
-		cfg.GFW.SourceURL = "https://github.com/gfwlist/gfwlist/raw/refs/heads/master/gfwlist.txt"
+		cfg.GFW.SourceURL = "https://raw.githubusercontent.com/gfwlist/gfwlist/master/gfwlist.txt"
 	}
 
 	// Discover TUN IP
@@ -296,17 +297,31 @@ func main() {
 
 		gfwFetcher = gfw.NewFetcher(cfg.GFW.SourceURL, gfwPath, httpTimeout)
 
-		// If use_tun is enabled and TUN IP discovered, bind HTTP client to TUN interface
+		// IMPORTANT: Do NOT bind GFW fetcher to TUN interface to avoid DNS resolution issues
+		// The GFW list must be fetched using the system's default network interface
+		// to ensure proper DNS resolution of raw.githubusercontent.com
 		if cfg.GFW.UseTUN && tunIP != nil {
-			log.Printf("[GFW] Using TUN interface %s for fetches", tunIP)
-			gfwFetcher.HTTPClient = &http.Client{
-				Transport: &http.Transport{
-					DialContext: (&net.Dialer{
-						LocalAddr: &net.TCPAddr{IP: tunIP},
-					}).DialContext,
-				},
-				Timeout: httpTimeout,
+			log.Printf("[GFW] TUN interface %s is configured for routing, but GFW fetcher uses system default for DNS resolution", tunIP)
+			// Note: We intentionally do NOT bind the HTTP client to the TUN interface
+			// to avoid DNS hijacking/resolution issues when fetching the GFW list
+		}
+
+		// Custom DNS: if configured, override HTTP client with custom resolver
+		if len(cfg.GFW.CustomDNSServers) > 0 {
+			resolver := pac.CreateCustomResolver(cfg.GFW.CustomDNSServers)
+			dialer := &net.Dialer{
+				Timeout:  httpTimeout,
+				Resolver: resolver,
 			}
+			transport := &http.Transport{
+				DialContext: dialer.DialContext,
+			}
+			customClient := &http.Client{
+				Transport: transport,
+				Timeout:   httpTimeout,
+			}
+			gfwFetcher.HTTPClient = customClient
+			log.Printf("[GFW] Using custom DNS: %v", cfg.GFW.CustomDNSServers)
 		}
 
 		// Fetch on startup

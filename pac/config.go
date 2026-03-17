@@ -60,12 +60,13 @@ type Route struct {
 
 // EvaluatorConfig holds configuration for the PAC Evaluator.
 type EvaluatorConfig struct {
-	PACPath        string        // Path to PAC file
-	LocalIP        string        // Value returned by myIpAddress()
-	DNSTimeout     time.Duration // Timeout for dnsResolve/isResolvable
-	EvalTimeout    time.Duration // Max time for Evaluate()
-	EnableDNSCache bool          // Enable in-memory DNS cache
-	FallbackRoute  Route         // Used when PAC fails
+	PACPath          string        // Path to PAC file
+	LocalIP          string        // Value returned by myIpAddress()
+	DNSTimeout       time.Duration // Timeout for dnsResolve/isResolvable
+	EvalTimeout      time.Duration // Max time for Evaluate()
+	EnableDNSCache   bool          // Enable in-memory DNS cache
+	CustomDNSServers []string      `yaml:"custom_dns_servers" json:"custom_dns_servers"` // Optional custom DNS servers
+	FallbackRoute    Route         // Used when PAC fails
 }
 
 // RouterConfig holds configuration for the Router.

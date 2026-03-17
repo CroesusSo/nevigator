@@ -39,12 +39,16 @@ type Evaluator struct {
 // It loads and compiles the PAC file at startup.
 func NewEvaluator(cfg EvaluatorConfig) (*Evaluator, error) {
 	e := &Evaluator{
-		cfg:      cfg,
-		stopped:  make(chan struct{}),
-		dnsCache: nil,
+		cfg:     cfg,
+		stopped: make(chan struct{}),
 	}
-	if cfg.EnableDNSCache {
-		e.dnsCache = newDNSCache(5 * time.Minute)
+	// Always create dnsCache; caching behavior controlled by enabled flag
+	e.dnsCache = newDNSCache(5 * time.Minute)
+	e.dnsCache.enabled = cfg.EnableDNSCache
+	// If custom DNS servers configured, set custom resolver
+	if len(cfg.CustomDNSServers) > 0 {
+		e.dnsCache.resolver = CreateCustomResolver(cfg.CustomDNSServers)
+		log.Printf("[PAC] Using custom DNS: %v", cfg.CustomDNSServers)
 	}
 	// Initial load
 	if err := e.reload(); err != nil {

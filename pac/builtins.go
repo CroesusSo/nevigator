@@ -78,7 +78,7 @@ func registerBuiltins(vm *goja.Runtime, cfg EvaluatorConfig, cache *dnsCache) {
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), cfg.DNSTimeout)
 		defer cancel()
-		addrs, err := lookupHost(ctx, host)
+		addrs, err := cache.lookupHost(ctx, host)
 		if err != nil || len(addrs) == 0 {
 			return vm.ToValue(goja.Undefined())
 		}
@@ -101,7 +101,7 @@ func registerBuiltins(vm *goja.Runtime, cfg EvaluatorConfig, cache *dnsCache) {
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), cfg.DNSTimeout)
 		defer cancel()
-		addrs, err := lookupHost(ctx, host)
+		addrs, err := cache.lookupHost(ctx, host)
 		if err != nil || len(addrs) == 0 {
 			return vm.ToValue(false)
 		}

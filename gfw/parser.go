@@ -139,9 +139,9 @@ func action(isException bool) string {
 
 func route(isException bool) string {
 	if isException {
-		return "DIRECT"
+		return "DIRECT" // whitelist rules always return DIRECT
 	}
-	return "SOCKS5 127.0.0.1:1080" // default proxy route
+	return "" // empty route for blacklist entries triggers DEFAULT/DIRECT logic in generator
 }
 
 // normalizeGlob ensures the pattern starts and ends with * for broad matching.
