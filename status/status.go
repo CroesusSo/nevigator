@@ -17,6 +17,7 @@ type ServerStatus struct {
 	HTTPListen   string `json:"httpListen"`
 	SOCKS5Listen string `json:"socks5Listen"`
 	AdminListen  string `json:"adminListen"`
+	HTTPSListen  string `json:"httpsListen,omitempty"`
 	TUNDevice    string `json:"tunDevice"`
 	TUNIP        string `json:"tunIP,omitempty"`
 	TUNUp        bool   `json:"tunUp"`

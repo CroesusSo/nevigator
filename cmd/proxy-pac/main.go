@@ -26,6 +26,7 @@ type Config struct {
 		HTTPListen           string              `yaml:"http_listen"`
 		SOCKS5Listen         string              `yaml:"socks5_listen"`
 		AdminListen          string              `yaml:"admin_listen"`
+		HTTPSListen          string              `yaml:"https_listen"`
 		PACPath              string              `yaml:"pac_path"`
 		TUNDevice            string              `yaml:"tun_device"`
 		DefaultExternalProxy string              `yaml:"default_external_proxy"`
@@ -107,6 +108,7 @@ func defaultConfigYAML(pacPath string) string {
   http_listen: ":8080"
   socks5_listen: ":11080"
   admin_listen: "127.0.0.1:9090"
+  https_listen: ":8443"
   pac_path: "%s"
   tun_device: "tun0"
   default_external_proxy: ""
@@ -167,6 +169,7 @@ func defaultConfig() *Config {
 	cfg.Proxy.HTTPListen = ":8080"
 	cfg.Proxy.SOCKS5Listen = ":11080"
 	cfg.Proxy.AdminListen = "127.0.0.1:9090"
+	cfg.Proxy.HTTPSListen = ":8443"
 	cfg.Proxy.TUNDevice = "tun0"
 	cfg.PAC.DNSTimeout = 500 * time.Millisecond
 	cfg.PAC.EvalTimeout = 200 * time.Millisecond
@@ -264,6 +267,7 @@ func main() {
 		HTTPListen:   cfg.Proxy.HTTPListen,
 		SOCKS5Listen: cfg.Proxy.SOCKS5Listen,
 		AdminListen:  cfg.Proxy.AdminListen,
+		HTTPSListen:  cfg.Proxy.HTTPSListen,
 		PACPath:      cfg.Proxy.PACPath,
 		TUNDevice:    cfg.Proxy.TUNDevice,
 		TLSConfig:    cfg.Proxy.TLS,

@@ -23,12 +23,13 @@ import (
 
 // Server implements the HTTP CONNECT and SOCKS5 proxy.
 type Server struct {
-	cfg        pac.ProxyConfig
-	evaluator  *pac.Evaluator
-	router     *router.Router
-	httpServer *http.Server
-	socks5Conn chan net.Conn
-	stopped    chan struct{}
+	cfg         pac.ProxyConfig
+	evaluator   *pac.Evaluator
+	router      *router.Router
+	httpServer  *http.Server
+	httpsServer *http.Server // Optional TLS-wrapped HTTP proxy
+	socks5Conn  chan net.Conn
+	stopped     chan struct{}
 
 	mu         sync.RWMutex
 	conns      map[string]*status.Connection
@@ -64,6 +65,32 @@ func NewServer(cfg pac.ProxyConfig, evaluator *pac.Evaluator, router *router.Rou
 			log.Printf("Warning: Failed to load TLS config: %v", err)
 		} else {
 			s.tlsConfig = tlsConfig
+		}
+	}
+
+	// Initialize HTTPS server if configured
+	if cfg.HTTPSListen != "" {
+		if s.tlsConfig == nil {
+			log.Printf("Warning: HTTPS proxy configured on %s but TLS certificate/key not provided", cfg.HTTPSListen)
+		} else {
+			s.httpsServer = &http.Server{
+				Addr:    cfg.HTTPSListen,
+				Handler: mux,
+			}
+			// Start HTTPS listener in a separate goroutine
+			go func() {
+				ln, err := net.Listen("tcp", cfg.HTTPSListen)
+				if err != nil {
+					log.Printf("HTTPS proxy listen failed on %s: %v", cfg.HTTPSListen, err)
+					s.httpsServer = nil
+					return
+				}
+				tlsLn := tls.NewListener(ln, s.tlsConfig)
+				if err := s.httpsServer.Serve(tlsLn); err != nil && !errors.Is(err, http.ErrServerClosed) {
+					log.Printf("HTTPS proxy server error: %v", err)
+				}
+			}()
+			log.Printf("HTTPS proxy listening on %s", cfg.HTTPSListen)
 		}
 	}
 
@@ -189,6 +216,11 @@ func (s *Server) Start() error {
 // Stop gracefully shuts down the server.
 func (s *Server) Stop() error {
 	close(s.stopped)
+	if s.httpsServer != nil {
+		if err := s.httpsServer.Close(); err != nil {
+			log.Printf("HTTPS server shutdown error: %v", err)
+		}
+	}
 	return s.httpServer.Close()
 }
 
@@ -248,6 +280,7 @@ func (s *Server) Status() status.ServerStatus {
 		HTTPListen:   s.cfg.HTTPListen,
 		SOCKS5Listen: s.cfg.SOCKS5Listen,
 		AdminListen:  s.cfg.AdminListen,
+		HTTPSListen:  s.cfg.HTTPSListen,
 		TUNDevice:    tunDevice,
 		TUNIP:        tunIPStr,
 		TUNUp:        tunUp,

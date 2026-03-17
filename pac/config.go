@@ -82,6 +82,7 @@ type ProxyConfig struct {
 	HTTPListen   string
 	SOCKS5Listen string
 	AdminListen  string
+	HTTPSListen  string // Optional TLS-wrapped HTTP proxy
 	PACPath      string
 	TUNDevice    string
 	TUNIP        net.IP // auto-discovered if empty
