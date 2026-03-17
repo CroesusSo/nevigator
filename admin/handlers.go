@@ -75,28 +75,30 @@ func validateProxyAddress(addr string, ourHTTP, ourSOCKS5, ourAdmin string) erro
 // FullConfig mirrors the main package's Config for reading/writing the YAML.
 type FullConfig struct {
 	Proxy struct {
-		HTTPListen           string              `yaml:"http_listen"`
-		SOCKS5Listen         string              `yaml:"socks5_listen"`
-		AdminListen          string              `yaml:"admin_listen"`
-		PACPath              string              `yaml:"pac_path"`
-		TUNDevice            string              `yaml:"tun_device"`
-		DefaultExternalProxy string              `yaml:"default_external_proxy"`
-		ExternalProxies      []pac.ExternalProxy `yaml:"external_proxies"`
+		HTTPListen           string              `yaml:"http_listen" json:"http_listen"`
+		SOCKS5Listen         string              `yaml:"socks5_listen" json:"socks5_listen"`
+		AdminListen          string              `yaml:"admin_listen" json:"admin_listen"`
+		HTTPSListen          string              `yaml:"https_listen" json:"https_listen"` // HTTPS proxy listener address (default :8443)
+		PACPath              string              `yaml:"pac_path" json:"pac_path"`
+		TUNDevice            string              `yaml:"tun_device" json:"tun_device"`
+		DefaultExternalProxy string              `yaml:"default_external_proxy" json:"default_external_proxy"`
+		ExternalProxies      []pac.ExternalProxy `yaml:"external_proxies" json:"external_proxies"`
+		TLS                  pac.TLSConfig       `yaml:"tls" json:"tls"` // TLS configuration for HTTPS proxy (certificate, key, CA, client auth)
 	} `yaml:"proxy"`
 	PAC struct {
-		LocalIP        string        `yaml:"local_ip"`
-		DNSTimeout     time.Duration `yaml:"dns_timeout"`
-		EvalTimeout    time.Duration `yaml:"eval_timeout"`
-		EnableDNSCache bool          `yaml:"enable_dns_cache"`
+		LocalIP        string        `yaml:"local_ip" json:"local_ip"`
+		DNSTimeout     time.Duration `yaml:"dns_timeout" json:"dns_timeout"`
+		EvalTimeout    time.Duration `yaml:"eval_timeout" json:"eval_timeout"`
+		EnableDNSCache bool          `yaml:"enable_dns_cache" json:"enable_dns_cache"`
 	} `yaml:"pac"`
 	GFW struct {
-		SourceURL      string        `yaml:"source_url"`
-		LocalRulesPath string        `yaml:"local_rules_path"`
-		UserRulesPath  string        `yaml:"user_rules_path"`
-		UseTUN         bool          `yaml:"use_tun"`
-		UpdateInterval time.Duration `yaml:"update_interval"`
-		FetchOnStartup bool          `yaml:"fetch_on_startup"`
-		HTTPTimeout    time.Duration `yaml:"http_timeout"`
+		SourceURL      string        `yaml:"source_url" json:"source_url"`
+		LocalRulesPath string        `yaml:"local_rules_path" json:"local_rules_path"`
+		UserRulesPath  string        `yaml:"user_rules_path" json:"user_rules_path"`
+		UseTUN         bool          `yaml:"use_tun" json:"use_tun"`
+		UpdateInterval time.Duration `yaml:"update_interval" json:"update_interval"`
+		FetchOnStartup bool          `yaml:"fetch_on_startup" json:"fetch_on_startup"`
+		HTTPTimeout    time.Duration `yaml:"http_timeout" json:"http_timeout"`
 	} `yaml:"gfw"`
 }
 
@@ -434,42 +436,73 @@ func (h *Handler) handleUI(w http.ResponseWriter, r *http.Request) {
      </div>
      <div id="add-proxy-overlay" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.5); z-index:999;" onclick="closeAddProxyModal()"></div>
 
-     <!-- Settings Tab -->
-     <div id="panel-settings" class="panel">
-       <div class="card">
-         <h3>Proxy Listeners</h3>
-         <div class="form-row">
-           <label>HTTP Proxy (listen)</label>
-           <input id="http-listen" value="0.0.0.0:8080">
-         </div>
-         <div class="form-row">
-           <label>SOCKS5 Proxy (listen)</label>
-           <input id="socks5-listen" value="0.0.0.0:1080">
-         </div>
-         <div class="form-row">
-           <label>Admin UI (listen)</label>
-           <input id="admin-listen" value="127.0.0.1:9090">
-         </div>
-       </div>
+      <!-- Settings Tab -->
+      <div id="panel-settings" class="panel">
+        <div class="card">
+          <h3>Proxy Listeners</h3>
+          <div class="form-row">
+            <label>HTTP Proxy (listen)</label>
+            <input id="http-listen" value="0.0.0.0:8080">
+          </div>
+          <div class="form-row">
+            <label>SOCKS5 Proxy (listen)</label>
+            <input id="socks5-listen" value="0.0.0.0:1080">
+          </div>
+          <div class="form-row">
+            <label>Admin UI (listen)</label>
+            <input id="admin-listen" value="127.0.0.1:9090">
+          </div>
+          <div class="form-row">
+            <label>HTTPS Proxy (listen)</label>
+            <input id="https-listen" placeholder=":8443" value=":8443">
+          </div>
+        </div>
 
-       <div class="card">
-         <h3>Paths & Devices</h3>
-         <div class="form-row">
-           <label>PAC file path</label>
-           <input id="pac-path" value="/etc/proxy.pac">
-         </div>
-         <div class="form-row">
-           <label>TUN device</label>
-           <input id="tun-device" value="tun0">
-         </div>
-       </div>
+        <div class="card">
+          <h3>TLS Settings</h3>
+          <p class="hint">TLS certificate and key for HTTPS proxy. Restart required after changes.</p>
+          <div class="form-row">
+            <label>Certificate file</label>
+            <input id="tls-certificate" placeholder="/path/to/cert.pem">
+          </div>
+          <div class="form-row">
+            <label>Key file</label>
+            <input id="tls-key" placeholder="/path/to/key.pem">
+          </div>
+          <div class="form-row">
+            <label>CA file (optional)</label>
+            <input id="tls-ca" placeholder="/path/to/ca.pem">
+          </div>
+          <div class="form-row">
+            <label>Client auth</label>
+            <select id="tls-client-auth">
+              <option value="">None</option>
+              <option value="request">Request</option>
+              <option value="require_any">Require any</option>
+              <option value="verify_if_given">Verify if given</option>
+              <option value="require_verify">Require and verify</option>
+            </select>
+          </div>
+        </div>
 
-       <div class="card">
-         <h3>Save Changes</h3>
-         <p class="hint">Listener changes require a restart to take effect. Other changes are applied immediately.</p>
-         <button class="btn btn-primary" onclick="saveConfig()">Save Configuration</button>
-       </div>
-     </div>
+        <div class="card">
+          <h3>Paths & Devices</h3>
+          <div class="form-row">
+            <label>PAC file path</label>
+            <input id="pac-path" value="/etc/proxy.pac">
+          </div>
+          <div class="form-row">
+            <label>TUN device</label>
+            <input id="tun-device" value="tun0">
+          </div>
+        </div>
+
+        <div class="card">
+          <h3>Save Changes</h3>
+          <p class="hint">Listener changes require a restart to take effect. Other changes are applied immediately.</p>
+          <button class="btn btn-primary" onclick="saveConfig()">Save Configuration</button>
+        </div>
+      </div>
 
    </div>
     <script>
@@ -1095,42 +1128,55 @@ let gfwRules = [];
           .catch(e => alert('Error: ' + e.message));
       }
 
-      function loadConfig() {
-        fetch('/api/config').then(r => r.json()).then(cfg => {
-          currentDefaultProxy = cfg.default_external_proxy || '';
-          document.getElementById('default-proxy-select').value = currentDefaultProxy;
-          if (document.getElementById('http-listen')) document.getElementById('http-listen').value = cfg.http_listen || '';
-          if (document.getElementById('socks5-listen')) document.getElementById('socks5-listen').value = cfg.socks5_listen || '';
-          if (document.getElementById('admin-listen')) document.getElementById('admin-listen').value = cfg.admin_listen || '';
-          if (document.getElementById('pac-path')) document.getElementById('pac-path').value = cfg.pac_path || '';
-          if (document.getElementById('tun-device')) document.getElementById('tun-device').value = cfg.tun_device || '';
-        }).catch(err => {
-          console.error('Failed to load config:', err);
-        });
-      }
+       function loadConfig() {
+         fetch('/api/config').then(r => r.json()).then(cfg => {
+           currentDefaultProxy = cfg.default_external_proxy || '';
+           document.getElementById('default-proxy-select').value = currentDefaultProxy;
+           if (document.getElementById('http-listen')) document.getElementById('http-listen').value = cfg.http_listen || '';
+           if (document.getElementById('socks5-listen')) document.getElementById('socks5-listen').value = cfg.socks5_listen || '';
+           if (document.getElementById('admin-listen')) document.getElementById('admin-listen').value = cfg.admin_listen || '';
+           if (document.getElementById('https-listen')) document.getElementById('https-listen').value = cfg.https_listen || '';
+           if (document.getElementById('pac-path')) document.getElementById('pac-path').value = cfg.pac_path || '';
+           if (document.getElementById('tun-device')) document.getElementById('tun-device').value = cfg.tun_device || '';
+           // TLS fields
+           if (document.getElementById('tls-certificate')) document.getElementById('tls-certificate').value = cfg.tls?.certificate_file || '';
+           if (document.getElementById('tls-key')) document.getElementById('tls-key').value = cfg.tls?.key_file || '';
+           if (document.getElementById('tls-ca')) document.getElementById('tls-ca').value = cfg.tls?.ca_file || '';
+           if (document.getElementById('tls-client-auth')) document.getElementById('tls-client-auth').value = cfg.tls?.client_auth || '';
+         }).catch(err => {
+           console.error('Failed to load config:', err);
+         });
+       }
 
-      function saveConfig() {
-        const payload = {
-          default_external_proxy: document.getElementById('default-proxy-select').value,
-          http_listen: document.getElementById('http-listen').value,
-          socks5_listen: document.getElementById('socks5-listen').value,
-          admin_listen: document.getElementById('admin-listen').value,
-          pac_path: document.getElementById('pac-path').value,
-          tun_device: document.getElementById('tun-device').value
-        };
-        fetch('/api/config', {
-          method: 'PUT',
-          headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify(payload)
-        })
-        .then(r => r.json())
-        .then(data => {
-          alert('Config saved' + (data.restart_required ? ' (restart required for listeners)' : ''));
-        })
-        .catch(e => alert('Error: ' + e.message));
-      }
-
-      function updateRouteOptions() {
+       function saveConfig() {
+         const payload = {
+           default_external_proxy: document.getElementById('default-proxy-select').value,
+           http_listen: document.getElementById('http-listen').value,
+           socks5_listen: document.getElementById('socks5-listen').value,
+           admin_listen: document.getElementById('admin-listen').value,
+           https_listen: document.getElementById('https-listen').value,
+           pac_path: document.getElementById('pac-path').value,
+           tun_device: document.getElementById('tun-device').value,
+           tls: {
+             certificate_file: document.getElementById('tls-certificate').value,
+             key_file: document.getElementById('tls-key').value,
+             ca_file: document.getElementById('tls-ca').value,
+             client_auth: document.getElementById('tls-client-auth').value
+           }
+         };
+         fetch('/api/config', {
+           method: 'PUT',
+           headers: {'Content-Type': 'application/json'},
+           body: JSON.stringify(payload)
+         })
+         .then(r => r.json())
+         .then(data => {
+           alert('Config saved' + (data.restart_required ? ' (restart required for listeners/TLS)' : ''));
+         })
+         .catch(e => alert('Error: ' + e.message));
+       }
+       
+       function updateRouteOptions() {
         const base = ['DIRECT','TUN','DEFAULT','SOCKS5 127.0.0.1:1080'];
         allProxies.forEach(p => base.push('EXTERNAL ' + p.id));
         const addSelect = document.getElementById('new-route');
@@ -1175,27 +1221,35 @@ let gfwRules = [];
         .catch(e => alert('Error: ' + e.message));
       }
 
-      function saveConfig() {
-        const payload = {
-          default_external_proxy: document.getElementById('default-proxy-select').value,
-          http_listen: document.getElementById('http-listen').value,
-          socks5_listen: document.getElementById('socks5-listen').value,
-          admin_listen: document.getElementById('admin-listen').value,
-          pac_path: document.getElementById('pac-path').value,
-          tun_device: document.getElementById('tun-device').value
-        };
-        fetch('/api/config', {
-          method: 'PUT',
-          headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify(payload)
-        })
-        .then(r => r.json())
-        .then(data => {
-          alert('Config saved' + (data.restart_required ? ' (restart required for listeners)' : ''));
-        })
-        .catch(e => alert('Error: ' + e.message));
-      }
-     setInterval(loadStatus, 5000);
+       function saveConfig() {
+         const payload = {
+           default_external_proxy: document.getElementById('default-proxy-select').value,
+           http_listen: document.getElementById('http-listen').value,
+           socks5_listen: document.getElementById('socks5-listen').value,
+           admin_listen: document.getElementById('admin-listen').value,
+           https_listen: document.getElementById('https-listen').value,
+           pac_path: document.getElementById('pac-path').value,
+           tun_device: document.getElementById('tun-device').value,
+           tls: {
+             certificate_file: document.getElementById('tls-certificate').value,
+             key_file: document.getElementById('tls-key').value,
+             ca_file: document.getElementById('tls-ca').value,
+             client_auth: document.getElementById('tls-client-auth').value
+           }
+         };
+         fetch('/api/config', {
+           method: 'PUT',
+           headers: {'Content-Type': 'application/json'},
+           body: JSON.stringify(payload)
+         })
+         .then(r => r.json())
+         .then(data => {
+           alert('Config saved' + (data.restart_required ? ' (restart required for listeners/TLS)' : ''));
+         })
+         .catch(e => alert('Error: ' + e.message));
+       }
+      
+      setInterval(loadStatus, 5000);
      setInterval(function() {
        if (document.getElementById('panel-connections').classList.contains('active')) {
          loadConnections();
@@ -2023,15 +2077,23 @@ func (h *Handler) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 		HTTPListen           string `json:"http_listen"`
 		SOCKS5Listen         string `json:"socks5_listen"`
 		AdminListen          string `json:"admin_listen"`
+		HTTPSListen          string `json:"https_listen"`
 		PACPath              string `json:"pac_path"`
 		TUNDevice            string `json:"tun_device"`
 		DefaultExternalProxy string `json:"default_external_proxy"`
+		TLS                  struct {
+			CertificateFile string `json:"certificate_file"`
+			KeyFile         string `json:"key_file"`
+			CAFile          string `json:"ca_file"`
+			ClientAuth      string `json:"client_auth"`
+		} `json:"tls"`
 	}{
 		HTTPListen:   status.HTTPListen,
 		SOCKS5Listen: status.SOCKS5Listen,
 		AdminListen:  status.AdminListen,
+		HTTPSListen:  status.HTTPSListen, // Use status if available, else from config
 	}
-	// Read config file to get PACPath, TUNDevice, DefaultExternalProxy
+	// Read config file to get PACPath, TUNDevice, DefaultExternalProxy, HTTPSListen, TLS
 	data, err := os.ReadFile(h.configPath)
 	if err == nil {
 		var full FullConfig
@@ -2039,6 +2101,11 @@ func (h *Handler) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 			cfg.PACPath = full.Proxy.PACPath
 			cfg.TUNDevice = full.Proxy.TUNDevice
 			cfg.DefaultExternalProxy = full.Proxy.DefaultExternalProxy
+			cfg.HTTPSListen = full.Proxy.HTTPSListen
+			cfg.TLS.CertificateFile = full.Proxy.TLS.CertificateFile
+			cfg.TLS.KeyFile = full.Proxy.TLS.KeyFile
+			cfg.TLS.CAFile = full.Proxy.TLS.CAFile
+			cfg.TLS.ClientAuth = full.Proxy.TLS.ClientAuth
 		}
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -2051,9 +2118,16 @@ func (h *Handler) handlePutConfig(w http.ResponseWriter, r *http.Request) {
 		HTTPListen           string `json:"http_listen"`
 		SOCKS5Listen         string `json:"socks5_listen"`
 		AdminListen          string `json:"admin_listen"`
+		HTTPSListen          string `json:"https_listen"`
 		PACPath              string `json:"pac_path"`
 		TUNDevice            string `json:"tun_device"`
 		DefaultExternalProxy string `json:"default_external_proxy"`
+		TLS                  struct {
+			CertificateFile string `json:"certificate_file"`
+			KeyFile         string `json:"key_file"`
+			CAFile          string `json:"ca_file"`
+			ClientAuth      string `json:"client_auth"`
+		} `json:"tls"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&upd); err != nil {
 		http.Error(w, "Invalid JSON", http.StatusBadRequest)
@@ -2085,6 +2159,10 @@ func (h *Handler) handlePutConfig(w http.ResponseWriter, r *http.Request) {
 		cfg.Proxy.AdminListen = upd.AdminListen
 		restartRequired = true
 	}
+	if upd.HTTPSListen != "" {
+		cfg.Proxy.HTTPSListen = upd.HTTPSListen
+		restartRequired = true
+	}
 	if upd.PACPath != "" {
 		cfg.Proxy.PACPath = upd.PACPath
 	}
@@ -2096,6 +2174,23 @@ func (h *Handler) handlePutConfig(w http.ResponseWriter, r *http.Request) {
 		h.router.SetDefaultProxyID(upd.DefaultExternalProxy)
 		h.defaultExternalProxy = upd.DefaultExternalProxy
 		h.regeneratePAC()
+	}
+	// TLS updates (only if provided)
+	if upd.TLS.CertificateFile != "" {
+		cfg.Proxy.TLS.CertificateFile = upd.TLS.CertificateFile
+		restartRequired = true
+	}
+	if upd.TLS.KeyFile != "" {
+		cfg.Proxy.TLS.KeyFile = upd.TLS.KeyFile
+		restartRequired = true
+	}
+	if upd.TLS.CAFile != "" {
+		cfg.Proxy.TLS.CAFile = upd.TLS.CAFile
+		restartRequired = true
+	}
+	if upd.TLS.ClientAuth != "" {
+		cfg.Proxy.TLS.ClientAuth = upd.TLS.ClientAuth
+		restartRequired = true
 	}
 	// Write updated config
 	if err := h.writeFullConfig(cfg); err != nil {
