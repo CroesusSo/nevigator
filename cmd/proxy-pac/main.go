@@ -121,7 +121,7 @@ pac:
   enable_dns_cache: false
 
 gfw:
-  source_url: "https://github.com/gfwlist/gfwlist/raw/refs/heads/master/gfwlist.txt"
+  source_url: "https://raw.githubusercontent.com/gfwlist/gfwlist/master/gfwlist.txt"
   local_rules_path: "%s"
   user_rules_path: "%s"
   use_tun: true
