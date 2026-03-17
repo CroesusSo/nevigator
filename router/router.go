@@ -196,7 +196,7 @@ func (r *Router) dialSOCKS5WithAuth(destAddr, socksAddr string, dialer *net.Dial
 	}
 
 	// Read reply: VER, REP, RSV, ATYP, BND.ADDR, BND.PORT
-	resp := make([]byte, 4)
+	resp := make([]byte, 10)
 	if err := socks5.ReadFull(conn, resp); err != nil {
 		conn.Close()
 		return nil, err
@@ -212,6 +212,9 @@ func (r *Router) dialSOCKS5WithAuth(destAddr, socksAddr string, dialer *net.Dial
 		}
 		return nil, ErrSOCKS5GeneralFailure
 	}
+
+	// BND.ADDR and BND.PORT are ignored as per SOCKS5 spec
+	// but we must consume them to leave the connection in clean state
 
 	return conn, nil
 }
