@@ -30,6 +30,7 @@ type Config struct {
 		TUNDevice            string              `yaml:"tun_device"`
 		DefaultExternalProxy string              `yaml:"default_external_proxy"`
 		ExternalProxies      []pac.ExternalProxy `yaml:"external_proxies"`
+		TLS                  pac.TLSConfig       `yaml:"tls"`
 	} `yaml:"proxy"`
 	PAC struct {
 		LocalIP        string        `yaml:"local_ip"`
@@ -264,6 +265,7 @@ func main() {
 		AdminListen:  cfg.Proxy.AdminListen,
 		PACPath:      cfg.Proxy.PACPath,
 		TUNDevice:    cfg.Proxy.TUNDevice,
+		TLSConfig:    cfg.Proxy.TLS,
 	}
 	proxySrv := proxy.NewServer(proxyCfg, evaluator, router)
 	proxySrv.SetTUNIP(tunIP)

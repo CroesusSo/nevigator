@@ -1,9 +1,12 @@
 package proxy
 
 import (
+	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"io"
+	"io/ioutil"
 	"log"
 	"net"
 	"net/http"
@@ -33,6 +36,7 @@ type Server struct {
 	nextID     atomic.Int64
 	tunDevice  string
 	tunIP      net.IP
+	tlsConfig  *tls.Config
 }
 
 // NewServer creates a new proxy server.
@@ -52,7 +56,115 @@ func NewServer(cfg pac.ProxyConfig, evaluator *pac.Evaluator, router *router.Rou
 		Addr:    cfg.HTTPListen,
 		Handler: mux,
 	}
+
+	// Initialize TLS config if TLS settings are provided
+	if cfg.TLSConfig.CertificateFile != "" && cfg.TLSConfig.KeyFile != "" {
+		tlsConfig, err := s.loadTLSConfig(&cfg.TLSConfig)
+		if err != nil {
+			log.Printf("Warning: Failed to load TLS config: %v", err)
+		} else {
+			s.tlsConfig = tlsConfig
+		}
+	}
+
 	return s
+}
+
+// loadTLSConfig loads TLS configuration from the provided config.
+func (s *Server) loadTLSConfig(cfg *pac.TLSConfig) (*tls.Config, error) {
+	// Load server certificate
+	cert, err := tls.LoadX509KeyPair(cfg.CertificateFile, cfg.KeyFile)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load server certificate: %w", err)
+	}
+
+	// Load root CA if specified
+	var rootCA *x509.CertPool
+	if cfg.CAFile != "" {
+		rootCA, err = loadCAFile(cfg.CAFile)
+		if err != nil {
+			return nil, fmt.Errorf("failed to load CA file: %w", err)
+		}
+	} else {
+		// Use system root CAs
+		rootCA, err = x509.SystemCertPool()
+		if err != nil {
+			rootCA = x509.NewCertPool()
+		}
+	}
+
+	// Load client CAs if specified
+	var clientCA *x509.CertPool
+	if cfg.ClientCAs != "" {
+		clientCA, err = loadCAFile(cfg.ClientCAs)
+		if err != nil {
+			return nil, fmt.Errorf("failed to load client CA file: %w", err)
+		}
+	}
+
+	// Determine client auth type
+	var clientAuth tls.ClientAuthType
+	switch cfg.ClientAuth {
+	case "":
+		clientAuth = tls.NoClientCert
+	case "request":
+		clientAuth = tls.RequestClientCert
+	case "require_any":
+		clientAuth = tls.RequireAnyClientCert
+	case "verify_if_given":
+		clientAuth = tls.VerifyClientCertIfGiven
+	case "require_verify":
+		clientAuth = tls.RequireAndVerifyClientCert
+	default:
+		clientAuth = tls.NoClientCert
+	}
+
+	// Build TLS config
+	tlsConfig := &tls.Config{
+		Certificates:             []tls.Certificate{cert},
+		RootCAs:                  rootCA,
+		ClientCAs:                clientCA,
+		MinVersion:               cfg.MinVersion,
+		MaxVersion:               cfg.MaxVersion,
+		CipherSuites:             cfg.CipherSuites,
+		PreferServerCipherSuites: cfg.PreferServerCipherSuites,
+		SessionTicketsDisabled:   cfg.SessionTicketsDisabled,
+		InsecureSkipVerify:       cfg.InsecureSkipVerify,
+		ClientAuth:               clientAuth,
+	}
+
+	// Set custom verification callback if provided
+	if cfg.VerifyPeerCertificate != nil {
+		tlsConfig.VerifyPeerCertificate = func(rawCerts [][]byte, verifiedChains [][]*x509.Certificate) error {
+			// Convert verifiedChains to the expected format
+			var chains [][][]byte
+			for _, chain := range verifiedChains {
+				var bchain [][]byte
+				for _, cert := range chain {
+					bchain = append(bchain, cert.Raw)
+				}
+				chains = append(chains, bchain)
+			}
+			return cfg.VerifyPeerCertificate(rawCerts, chains)
+		}
+	}
+
+	return tlsConfig, nil
+}
+
+// loadCAFile loads a PEM-encoded CA file and returns a cert pool.
+func loadCAFile(path string) (*x509.CertPool, error) {
+	pemData, err := ioutil.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+
+	certPool := x509.NewCertPool()
+	if ok := certPool.AppendCertsFromPEM(pemData); !ok {
+		return nil, fmt.Errorf("failed to parse CA file %s", path)
+	}
+
+	return certPool, nil
 }
 
 // SetTUNIP sets the TUN IP address (called from main after discovery).
@@ -169,7 +281,17 @@ func (s *Server) handleHTTPConnect(w http.ResponseWriter, r *http.Request) {
 	port, _ := strconv.Atoi(portStr)
 	dest := fmt.Sprintf("%s:%d", host, port)
 
+	// Evaluate route for the destination
 	route := s.evaluator.Evaluate(host)
+
+	// Check if this is an HTTPS request (port 443) and if TLS routing is configured
+	if port == 443 && s.tlsConfig != nil {
+		// Handle HTTPS CONNECT with TLS
+		s.handleHTTPSConnect(w, r, host, port, dest, route)
+		return
+	}
+
+	// Handle regular HTTP CONNECT
 	outbound, err := s.router.Route(dest, route)
 	if err != nil {
 		log.Printf("Route failed for %s: %v", dest, err)
@@ -191,6 +313,63 @@ func (s *Server) handleHTTPConnect(w http.ResponseWriter, r *http.Request) {
 
 	connID := s.trackConnection(clientConn.RemoteAddr().String(), dest, route.Strategy, "http")
 	go s.relay(connID, clientConn, outbound)
+}
+
+// handleHTTPSConnect handles HTTPS CONNECT tunneling requests with TLS termination.
+func (s *Server) handleHTTPSConnect(w http.ResponseWriter, r *http.Request, host string, port int, dest string, route pac.Route) {
+	// For HTTPS, we need to establish a TLS connection with the client first
+	hj, ok := w.(http.Hijacker)
+	if !ok {
+		http.Error(w, "Hijacking not supported", http.StatusInternalServerError)
+		return
+	}
+
+	clientConn, _, err := hj.Hijack()
+	if err != nil {
+		log.Printf("Hijack failed: %v", err)
+		http.Error(w, "Hijack failed", http.StatusInternalServerError)
+		return
+	}
+
+	// Create TLS connection with client
+	tlsConn := tls.Server(clientConn, s.tlsConfig)
+	if err := tlsConn.Handshake(); err != nil {
+		log.Printf("TLS handshake failed: %v", err)
+		clientConn.Close()
+		http.Error(w, "TLS handshake failed", http.StatusInternalServerError)
+		return
+	}
+
+	// Extract SNI from the TLS connection for routing decisions
+	sni := ""
+	if tlsConn.ConnectionState().ServerName != "" {
+		sni = tlsConn.ConnectionState().ServerName
+	}
+
+	// Evaluate route again with SNI information if needed
+	// For now, we'll use the same route but this could be enhanced
+
+	// Establish outbound connection based on route
+	outbound, err := s.router.Route(dest, route)
+	if err != nil {
+		log.Printf("Route failed for %s: %v", dest, err)
+		tlsConn.Close()
+		http.Error(w, "Service unavailable", http.StatusBadGateway)
+		return
+	}
+
+	// Send success response to client
+	clientConn.Write([]byte("HTTP/1.1 200 Connection Established\r\n\r\n"))
+
+	// Track the connection
+	protocol := "https"
+	if sni != "" {
+		protocol = "https-sni:" + sni
+	}
+	connID := s.trackConnection(clientConn.RemoteAddr().String(), dest, route.Strategy, protocol)
+
+	// Relay data between client and server
+	go s.relay(connID, tlsConn, outbound)
 }
 
 // listenSOCKS5 accepts SOCKS5 client connections.

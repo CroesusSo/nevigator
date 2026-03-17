@@ -108,6 +108,23 @@ func registerBuiltins(vm *goja.Runtime, cfg EvaluatorConfig, cache *dnsCache) {
 		return vm.ToValue(true)
 	})
 
+	// TLS-specific built-ins for HTTPS proxy support
+	// tlsSNI - extracts SNI from the current TLS connection (if any)
+	vm.Set("tlsSNI", func(call goja.FunctionCall) goja.Value {
+		// In a real implementation, this would extract SNI from the current TLS connection
+		// For now, we'll return an empty string as a placeholder
+		// This would need to be enhanced with actual TLS connection information
+		return vm.ToValue("")
+	})
+
+	// tlsValidateCert - validates a certificate against trusted CAs
+	vm.Set("tlsValidateCert", func(call goja.FunctionCall) goja.Value {
+		// In a real implementation, this would validate a certificate
+		// For now, we'll return true as a placeholder
+		// This would need to be enhanced with actual certificate validation logic
+		return vm.ToValue(true)
+	})
+
 	// alert
 	vm.Set("alert", func(call goja.FunctionCall) goja.Value {
 		if len(call.Arguments) > 0 {
