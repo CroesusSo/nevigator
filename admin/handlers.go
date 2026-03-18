@@ -547,7 +547,7 @@ let gfwRules = [];
        });
        if (name === 'summary') loadStatus();
        if (name === 'connections') loadConnections();
-       if (name === 'rules') loadRules();
+       if (name === 'rules') {loadProxies();  loadRules(); }
        if (name === 'gfw') { loadGFWStatus(); loadConfig(); }
   if (name === 'proxies') { loadProxies(); loadConfig(); }
   if (name === 'settings') { loadConfig(); }
