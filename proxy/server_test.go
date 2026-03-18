@@ -102,3 +102,24 @@ func TestNewServer_HTTPServerNotCreatedWhenTLSInvalid(t *testing.T) {
 		t.Fatal("expected httpsServer to be nil when TLSConfig is invalid")
 	}
 }
+
+// TestFormatDest tests the formatDest helper function.
+func TestFormatDest(t *testing.T) {
+	tests := []struct {
+		host string
+		port int
+		want string
+	}{
+		{"2001:db8::1", 443, "[2001:db8::1]:443"},   // IPv6 without brackets
+		{"[2001:db8::1]", 443, "[2001:db8::1]:443"}, // IPv6 with brackets already
+		{"127.0.0.1", 8080, "127.0.0.1:8080"},       // IPv4
+		{"example.com", 80, "example.com:80"},       // Domain
+		{"::1", 8080, "[::1]:8080"},                 // Localhost IPv6
+	}
+	for _, tt := range tests {
+		got := formatDest(tt.host, tt.port)
+		if got != tt.want {
+			t.Errorf("formatDest(%q, %d) = %q, want %q", tt.host, tt.port, got, tt.want)
+		}
+	}
+}

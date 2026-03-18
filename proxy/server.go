@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -203,6 +204,17 @@ func loadCAFile(path string) (*x509.CertPool, error) {
 	return certPool, nil
 }
 
+// formatDest constructs a destination address suitable for net.Dial and routing.
+// net.Dial requires IPv6 literals to be bracketed (e.g., [::1]:443).
+// This helper ensures any IPv6 host (detected by presence of ':') is wrapped
+// in brackets if not already, while leaving IPv4 and domain names unchanged.
+func formatDest(host string, port int) string {
+	if strings.Contains(host, ":") && !strings.HasPrefix(host, "[") && !strings.HasSuffix(host, "]") {
+		return fmt.Sprintf("[%s]:%d", host, port)
+	}
+	return fmt.Sprintf("%s:%d", host, port)
+}
+
 // SetTUNIP sets the TUN IP address (called from main after discovery).
 func (s *Server) SetTUNIP(ip net.IP) {
 	s.mu.Lock()
@@ -321,7 +333,7 @@ func (s *Server) handleHTTPConnect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	port, _ := strconv.Atoi(portStr)
-	dest := fmt.Sprintf("%s:%d", host, port)
+	dest := formatDest(host, port)
 
 	// Evaluate route for the destination
 	route := s.evaluator.Evaluate(host)
@@ -513,7 +525,7 @@ func (s *Server) handleSOCKS5(conn net.Conn) {
 		conn.Write(socks5.EncodeReply(socks5.REPAddrTypeNotSupported))
 		return
 	}
-	dest := fmt.Sprintf("%s:%d", host, port)
+	dest := formatDest(host, int(port))
 
 	// Evaluate route and connect
 	route := s.evaluator.Evaluate(host)

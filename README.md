@@ -12,6 +12,7 @@ A high-performance proxy server that uses PAC (Proxy Auto-Config) scripts to rou
 - Web admin UI for editing, testing, and reloading PAC
 - External proxy registry: define upstream SOCKS5 proxies with optional credentials; use PAC values `EXTERNAL <id>` or `DEFAULT` to route through them
 - Lightweight, single binary
+- **Full IPv6 support**: CONNECT and SOCKS5 work with IPv6 destinations (including bracketed literals)
 
 ## Build
 
