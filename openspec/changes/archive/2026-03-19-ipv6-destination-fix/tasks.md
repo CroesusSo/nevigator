@@ -23,5 +23,5 @@
 
 ## Review & Archive
 - [x] Code review
-- [ ] QA smoke test on IPv6 network (optional)
-- [ ] Archive change after merge
+- [x] QA smoke test on IPv6 network (optional)
+- [x] Archive change after merge

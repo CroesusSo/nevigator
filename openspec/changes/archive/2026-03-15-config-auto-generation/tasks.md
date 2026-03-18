@@ -38,5 +38,5 @@
 - [x] 5.1 Run `go build -o proxy-pac ./cmd/proxy-pac` to verify compilation
 - [x] 5.2 Run `go test ./cmd/proxy-pac/ -v` to verify all tests pass
 - [x] 5.3 Run `go vet ./...` to check for issues
-- [ ] 5.4 Manual test: run `./proxy-pac` without any config, verify it creates `~/.config/proxy-pac/config.yaml` and `~/.config/proxy-pac/proxy.pac`
-- [ ] 5.5 Manual test: run `./proxy-pac --conf /tmp/custom.yaml` with custom config, verify PAC is created at `/tmp/proxy.pac`
+- [x] 5.4 Manual test: run `./proxy-pac` without any config, verify it creates `~/.config/proxy-pac/config.yaml` and `~/.config/proxy-pac/proxy.pac`
+- [x] 5.5 Manual test: run `./proxy-pac --conf /tmp/custom.yaml` with custom config, verify PAC is created at `/tmp/proxy.pac`

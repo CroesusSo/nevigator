@@ -79,9 +79,8 @@
  - [x] 9.7 Manual smoke test: create rule, inline edit, cancel, validation, toggle GFW, lazy scroll
 
 ## 10. Optional nice-to-haves (if time)
-
- - [x] 10.1 Persist "Show GFW" checkbox state in localStorage
- - [ ] 10.2 Add "Copy GFW to user" button as future enhancement
+- [x] 10.1 Persist "Show GFW" checkbox state in localStorage
+- [x] 10.2 Add "Copy GFW to user" button as future enhancement
 
 ## 11. GFW fetch through TUN
 
