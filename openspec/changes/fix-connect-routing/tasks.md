@@ -7,9 +7,13 @@
   - When creating `s.httpsServer`, also set its `Handler = topHandler`.
 - [x] 1.2 Ensure `s.handleHTTPConnect` remains unchanged and continues to work with the wrapper.
 - [x] 1.3 Fix `handleHTTPConnect` to extract target from `r.Host` (CONNECT target) instead of `r.URL.Path`.
+- [x] 1.4 Fix `handleHTTPSConnect` to avoid double TLS: hijack returns already TLS‑wrapped connection; use it directly without `tls.Server`.
 
 ## 2. Testing
 
 - [x] 2.1 Add integration test (`TestConnectRouting`) that sends a CONNECT request to an HTTP and HTTPS listener and expects non-404 response (e.g., 200 or 502 on route failure).
 - [x] 2.2 Run all existing tests to confirm no regressions.
 - [x] 2.3 Manually verify with `curl -x http://127.0.0.1:8080 https://example.com` and `curl -x https://127.0.0.1:8443 https://example.com`.
+- [x] 2.4 Fixed HTTPS CONNECT tunnel stuck (response not delivered) by sending 200 over the hijacked TLS connection.
+
+All tasks complete.

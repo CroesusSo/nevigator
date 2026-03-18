@@ -366,6 +366,7 @@ func (s *Server) handleHTTPSConnect(w http.ResponseWriter, r *http.Request, host
 		return
 	}
 
+	// Hijack gives us the underlying connection (already TLS-wrapped by the HTTPS listener)
 	clientConn, _, err := hj.Hijack()
 	if err != nil {
 		log.Printf("Hijack failed: %v", err)
@@ -373,19 +374,13 @@ func (s *Server) handleHTTPSConnect(w http.ResponseWriter, r *http.Request, host
 		return
 	}
 
-	// Create TLS connection with client
-	tlsConn := tls.Server(clientConn, s.tlsConfig)
-	if err := tlsConn.Handshake(); err != nil {
-		log.Printf("TLS handshake failed: %v", err)
-		clientConn.Close()
-		http.Error(w, "TLS handshake failed", http.StatusInternalServerError)
-		return
-	}
-
-	// Extract SNI from the TLS connection for routing decisions
+	// The connection is already a TLS connection from the HTTPS server's listener.
+	// Inspect TLS state for SNI.
 	sni := ""
-	if tlsConn.ConnectionState().ServerName != "" {
-		sni = tlsConn.ConnectionState().ServerName
+	if tlsConn, ok := clientConn.(*tls.Conn); ok {
+		if state := tlsConn.ConnectionState(); state.ServerName != "" {
+			sni = state.ServerName
+		}
 	}
 
 	// Evaluate route again with SNI information if needed
@@ -395,16 +390,16 @@ func (s *Server) handleHTTPSConnect(w http.ResponseWriter, r *http.Request, host
 	outbound, err := s.router.Route(dest, route)
 	if err != nil {
 		log.Printf("Route failed for %s: %v", dest, err)
-		tlsConn.Close()
+		clientConn.Close()
 		http.Error(w, "Service unavailable", http.StatusBadGateway)
 		return
 	}
 
-	// Send success response to client over TLS
-	_, err = tlsConn.Write([]byte("HTTP/1.1 200 Connection Established\r\n\r\n"))
+	// Send success response to client over the TLS connection
+	_, err = clientConn.Write([]byte("HTTP/1.1 200 Connection Established\r\n\r\n"))
 	if err != nil {
 		log.Printf("Failed to write CONNECT success response: %v", err)
-		tlsConn.Close()
+		clientConn.Close()
 		return
 	}
 
@@ -416,7 +411,7 @@ func (s *Server) handleHTTPSConnect(w http.ResponseWriter, r *http.Request, host
 	connID := s.trackConnection(clientConn.RemoteAddr().String(), dest, route.Strategy, protocol)
 
 	// Relay data between client and server
-	go s.relay(connID, tlsConn, outbound)
+	go s.relay(connID, clientConn, outbound)
 }
 
 // listenSOCKS5 accepts SOCKS5 client connections.
