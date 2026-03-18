@@ -12,4 +12,4 @@
 
 - [x] 2.1 Add integration test (`TestConnectRouting`) that sends a CONNECT request to an HTTP and HTTPS listener and expects non-404 response (e.g., 200 or 502 on route failure).
 - [x] 2.2 Run all existing tests to confirm no regressions.
-- [ ] 2.3 Manually verify with `curl -x http://127.0.0.1:8080 https://example.com` and `curl -x https://127.0.0.1:8443 https://example.com`.
+- [x] 2.3 Manually verify with `curl -x http://127.0.0.1:8080 https://example.com` and `curl -x https://127.0.0.1:8443 https://example.com`.
