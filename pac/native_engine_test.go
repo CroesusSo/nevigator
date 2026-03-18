@@ -201,3 +201,96 @@ func TestPortStripping(t *testing.T) {
 		t.Errorf("example.com:8080 -> %v, want TUN", r)
 	}
 }
+
+func TestExact_IPv6(t *testing.T) {
+	// IPv6 exact matching with and without port
+	rules := []gfw.Rule{
+		makeRule("2001:db8::1", gfw.MatchExact, "TUN", true),
+		makeRule("::1", gfw.MatchExact, "SOCKS5 127.0.0.1:1080", true),
+	}
+	engine := makeEngineWithRules(rules)
+
+	// Plain IPv6 literal
+	if r := engine.Evaluate("2001:db8::1"); r.Strategy != "TUN" {
+		t.Errorf("2001:db8::1 -> %v, want TUN", r)
+	}
+	// IPv6 with port in brackets (caller should have stripped port)
+	if r := engine.Evaluate("[2001:db8::1]:443"); r.Strategy != "TUN" {
+		t.Errorf("[2001:db8::1]:443 -> %v, want TUN", r)
+	}
+	// Localhost IPv6
+	if r := engine.Evaluate("::1"); r.Strategy != "SOCKS5" {
+		t.Errorf("::1 -> %v, want SOCKS5", r)
+	}
+	// IPv6 with brackets and port
+	if r := engine.Evaluate("[::1]:8080"); r.Strategy != "SOCKS5" {
+		t.Errorf("[::1]:8080 -> %v, want SOCKS5", r)
+	}
+}
+
+func TestHostGlobs_IPv6(t *testing.T) {
+	// Host glob pattern matching for IPv6
+	rules := []gfw.Rule{
+		makeRule("2001:db8::*", gfw.MatchHostGlob, "TUN", true),
+		makeRule("::*", gfw.MatchHostGlob, "DIRECT", true),
+	}
+	engine := makeEngineWithRules(rules)
+
+	// Pattern 2001:db8::*
+	if r := engine.Evaluate("2001:db8::1"); r.Strategy != "TUN" {
+		t.Errorf("2001:db8::1 -> %v, want TUN", r)
+	}
+	if r := engine.Evaluate("2001:db8::abcd"); r.Strategy != "TUN" {
+		t.Errorf("2001:db8::abcd -> %v, want TUN", r)
+	}
+	// Pattern ::* matches any IPv6 in :: subnet
+	if r := engine.Evaluate("::1"); r.Strategy != "DIRECT" {
+		t.Errorf("::1 -> %v, want DIRECT", r)
+	}
+	if r := engine.Evaluate("::ffff:192.0.2.1"); r.Strategy != "DIRECT" {
+		t.Errorf("::ffff:192.0.2.1 -> %v, want DIRECT", r)
+	}
+	// Non-matching IPv6
+	if r := engine.Evaluate("fe80::1"); r.Strategy != "DIRECT" {
+		t.Errorf("fe80::1 -> %v, want DIRECT (fallback)", r)
+	}
+}
+
+func TestSuffix_IPv6_NoMatch(t *testing.T) {
+	// Domain suffix should not match IPv6 addresses
+	rules := []gfw.Rule{
+		makeRule(".example.com", gfw.MatchDomainSuffix, "TUN", true),
+	}
+	engine := makeEngineWithRules(rules)
+
+	// IPv6 should not match domain suffix
+	if r := engine.Evaluate("2001:db8::1"); r.Strategy != "DIRECT" {
+		t.Errorf("2001:db8::1 -> %v, want DIRECT (no match)", r)
+	}
+	if r := engine.Evaluate("::1"); r.Strategy != "DIRECT" {
+		t.Errorf("::1 -> %v, want DIRECT (no match)", r)
+	}
+}
+
+func TestHostGlobs_Priority(t *testing.T) {
+	// With removal of break, earliest index among all matching globs wins
+	rules := []gfw.Rule{
+		makeRule("*.example.com", gfw.MatchHostGlob, "TUN", true), // index 0
+		makeRule("www.*.com", gfw.MatchHostGlob, "SOCKS5", true),  // index 1
+		makeRule("*", gfw.MatchHostGlob, "DEFAULT", true),         // index 2, matches everything
+	}
+	engine := makeEngineWithRules(rules)
+
+	// www.example.com matches all three; index 0 (TUN) should win
+	if r := engine.Evaluate("www.example.com"); r.Strategy != "TUN" {
+		t.Errorf("www.example.com -> %v, want TUN", r)
+	}
+	// sub.example.com matches first and third; index 0 wins
+	if r := engine.Evaluate("sub.example.com"); r.Strategy != "TUN" {
+		t.Errorf("sub.example.com -> %v, want TUN", r)
+	}
+	// example.org matches only the catch-all (*) → DEFAULT
+	if r := engine.Evaluate("example.org"); r.Strategy != "DEFAULT" {
+		t.Errorf("example.org -> %v, want DEFAULT", r)
+	}
+}

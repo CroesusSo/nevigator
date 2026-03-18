@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"net"
 	"regexp"
 	"strings"
 
@@ -51,8 +52,8 @@ func (t *domainSuffixTrie) insert(pattern string, meta ruleMeta) {
 
 func (t *domainSuffixTrie) match(host string) *ruleMeta {
 	host = strings.ToLower(host)
-	if idx := strings.IndexByte(host, ':'); idx >= 0 {
-		host = host[:idx]
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
 	}
 	labels := strings.Split(host, ".")
 	for i, j := 0, len(labels)-1; i < j; i, j = i+1, j-1 {
@@ -160,8 +161,8 @@ func NewNativeRuleEngine(pacContent string, fallback Route) (*NativeRuleEngine, 
 		switch r.Match {
 		case gfw.MatchExact:
 			host := strings.ToLower(r.Value)
-			if idx := strings.IndexByte(host, ':'); idx >= 0 {
-				host = host[:idx]
+			if h, _, err := net.SplitHostPort(host); err == nil {
+				host = h
 			}
 			if existing, ok := engine.exactMap[host]; !ok || meta.index < existing.index {
 				engine.exactMap[host] = &ruleMeta{index: meta.index, route: meta.route}
@@ -197,8 +198,8 @@ func NewNativeRuleEngine(pacContent string, fallback Route) (*NativeRuleEngine, 
 // Evaluate returns the best matching route for the given host.
 func (e *NativeRuleEngine) Evaluate(host string) Route {
 	host = strings.ToLower(host)
-	if idx := strings.IndexByte(host, ':'); idx >= 0 {
-		host = host[:idx]
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
 	}
 	bestIndex := int(^uint(0) >> 1)
 	var bestRoute Route
@@ -216,7 +217,7 @@ func (e *NativeRuleEngine) Evaluate(host string) Route {
 				bestIndex = hg.meta.index
 				bestRoute = hg.meta.route
 			}
-			break
+			// continue to find lowest index among all matches (no break)
 		}
 	}
 	if bestIndex == int(^uint(0)>>1) {
