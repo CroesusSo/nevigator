@@ -71,9 +71,6 @@ func loadConfig(path string) (*Config, error) {
 		cfg.Proxy.AdminListen = "127.0.0.1:9090"
 	}
 	// PACPath default handled in main() based on config file location
-	if cfg.Proxy.TUNDevice == "" {
-		cfg.Proxy.TUNDevice = "tun0"
-	}
 	if cfg.PAC.DNSTimeout == 0 {
 		cfg.PAC.DNSTimeout = 500 * time.Millisecond
 	}
