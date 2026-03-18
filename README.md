@@ -35,7 +35,10 @@ pac:
   local_ip: ""            # auto from tun0
   dns_timeout: 500ms
   eval_timeout: 200ms
-  enable_dns_cache: true
+   enable_dns_cache: true
+   cache_enabled: true
+   cache_max_size: 10000
+   cache_ttl: 10m
 ```
 
 Run:
@@ -43,6 +46,33 @@ Run:
 ```bash
 ./proxy-pac --config config.yaml
 ```
+
+## Native Rule Engine
+
+For generated PAC files (containing `__PAC_RULES__`), the proxy uses a native Go rule engine instead of the JavaScript interpreter. This provides **>100× performance improvement** for uncached evaluation (sub‑microsecond vs millisecond). The engine builds efficient indexes:
+
+- Exact host map (O(1))
+- Reversed‑label domain suffix trie (O(depth))
+- Deduplicated, ordered host glob patterns
+
+An LRU cache with configurable TTL stores recent host→route results, further reducing latency. Cache statistics are available via `/api/cache` and included in `/api/status`.
+
+### URL‑Glob Limitation
+
+URL‑glob rules (`shExpMatch(url, ...)`) are **not supported** in native mode because the proxy only sees the hostname for CONNECT requests. Such rules are ignored with a warning log, same as in JS mode.
+
+### Configuration
+
+Cache settings can be adjusted under the `pac` section:
+
+```yaml
+pac:
+  cache_enabled: true
+  cache_max_size: 10000  # maximum number of entries
+  cache_ttl: 10m          # time‑to‑live
+```
+
+If `cache_enabled` is true but `cache_max_size` or `cache_ttl` are not set, defaults are 10000 entries and 10 minutes.
 
 ## Admin UI
 

@@ -90,6 +90,9 @@ type FullConfig struct {
 		DNSTimeout     time.Duration `yaml:"dns_timeout" json:"dns_timeout"`
 		EvalTimeout    time.Duration `yaml:"eval_timeout" json:"eval_timeout"`
 		EnableDNSCache bool          `yaml:"enable_dns_cache" json:"enable_dns_cache"`
+		CacheEnabled   bool          `yaml:"cache_enabled" json:"cache_enabled"`
+		CacheMaxSize   int           `yaml:"cache_max_size" json:"cache_max_size"`
+		CacheTTL       time.Duration `yaml:"cache_ttl" json:"cache_ttl"`
 	} `yaml:"pac"`
 	GFW struct {
 		SourceURL      string        `yaml:"source_url" json:"source_url"`
@@ -147,7 +150,10 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/proxies/test", h.handleTestProxy)
 	mux.HandleFunc("/api/proxies/", h.handleProxyByID)
 	mux.HandleFunc("/api/proxies", h.handleProxies)
+	// Config API
 	mux.HandleFunc("/api/config", h.handleConfig)
+	// Cache API
+	mux.HandleFunc("/api/cache", h.handleCacheStats)
 	// Status API
 	mux.HandleFunc("/api/status", h.handleStatusAPI)
 	mux.HandleFunc("/api/connections", h.handleConnections)
@@ -1392,11 +1398,35 @@ func (h *Handler) handleStatusAPI(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	if h.statusProvider == nil {
-		json.NewEncoder(w).Encode(status.ServerStatus{})
-		return
+	var serverStatus status.ServerStatus
+	if h.statusProvider != nil {
+		serverStatus = h.statusProvider.Status()
 	}
-	json.NewEncoder(w).Encode(h.statusProvider.Status())
+	// Add cache stats if cache is enabled
+	if h.evaluator != nil {
+		hits, misses, size, maxSize, hitRate := h.evaluator.CacheStats()
+		if maxSize > 0 { // cache is enabled
+			// We'll add to a separate field; serverStatus may not have Cache field
+			// Let's create a wrapper to include cache
+			type statusWithCache struct {
+				status.ServerStatus
+				Cache map[string]interface{} `json:"cache,omitempty"`
+			}
+			swc := statusWithCache{
+				ServerStatus: serverStatus,
+				Cache: map[string]interface{}{
+					"hits":     hits,
+					"misses":   misses,
+					"size":     size,
+					"max_size": maxSize,
+					"hit_rate": hitRate,
+				},
+			}
+			json.NewEncoder(w).Encode(swc)
+			return
+		}
+	}
+	json.NewEncoder(w).Encode(serverStatus)
 }
 
 // handleConnections returns active connections.
@@ -1411,6 +1441,23 @@ func (h *Handler) handleConnections(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	json.NewEncoder(w).Encode(h.statusProvider.Connections())
+}
+
+// handleCacheStats returns cache statistics.
+func (h *Handler) handleCacheStats(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	hits, misses, size, maxSize, hitRate := h.evaluator.CacheStats()
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"hits":     hits,
+		"misses":   misses,
+		"size":     size,
+		"max_size": maxSize,
+		"hit_rate": hitRate,
+	})
 }
 
 // handleRules handles GET (list all) and POST (create user rule).

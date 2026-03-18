@@ -5,6 +5,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -28,11 +29,14 @@ type compiledPAC struct {
 
 // Evaluator implements the PAC evaluation logic.
 type Evaluator struct {
-	cfg       EvaluatorConfig
-	current   atomic.Value // *compiledPAC
-	stopped   chan struct{}
-	closeOnce sync.Once
-	dnsCache  *dnsCache
+	cfg         EvaluatorConfig
+	current     atomic.Value // *compiledPAC or *NativeRuleEngine
+	stopped     chan struct{}
+	closeOnce   sync.Once
+	dnsCache    *dnsCache
+	cache       *EvaluatorCache
+	engineType  string       // "js" or "native"
+	lastModTime atomic.Int64 // last modified time in Unix nanoseconds
 }
 
 // NewEvaluator creates a new Evaluator with the given config.
@@ -49,6 +53,26 @@ func NewEvaluator(cfg EvaluatorConfig) (*Evaluator, error) {
 	if len(cfg.CustomDNSServers) > 0 {
 		e.dnsCache.resolver = CreateCustomResolver(cfg.CustomDNSServers)
 		log.Printf("[PAC] Using custom DNS: %v", cfg.CustomDNSServers)
+	}
+	// Initialize cache if enabled
+	// Set defaults if not specified
+	if cfg.CacheEnabled {
+		if cfg.CacheMaxSize == 0 {
+			cfg.CacheMaxSize = 10000
+		}
+		if cfg.CacheTTL == 0 {
+			cfg.CacheTTL = 10 * time.Minute
+		}
+	}
+	e.cache = newEvaluatorCache(cacheConfig{
+		enabled:         cfg.CacheEnabled,
+		maxSize:         cfg.CacheMaxSize,
+		ttl:             cfg.CacheTTL,
+		cleanupInterval: time.Minute,
+	})
+	// Start periodic cache stats logging if cache enabled
+	if e.cache != nil {
+		go e.logCacheStatsLoop()
 	}
 	// Initial load
 	if err := e.reload(); err != nil {
@@ -119,16 +143,35 @@ func (e *Evaluator) reload() error {
 		}
 	}
 	modTime := info.ModTime()
+	modTimeNano := modTime.UnixNano()
 	// Check if up-to-date
-	if old := e.current.Load(); old != nil {
-		if old.(*compiledPAC).modTime.Equal(modTime) {
-			return nil
-		}
+	if e.lastModTime.Load() == modTimeNano {
+		return nil
 	}
+
 	src, err := os.ReadFile(e.cfg.PACPath)
 	if err != nil {
 		return fmt.Errorf("read pac file: %v", err)
 	}
+
+	// Try native engine if PAC contains __PAC_RULES__
+	if strings.Contains(string(src), "__PAC_RULES__") {
+		engine, err := NewNativeRuleEngine(string(src), e.cfg.FallbackRoute)
+		if err != nil {
+			log.Printf("[WARN] Native engine build failed: %v; falling back to JS", err)
+		} else {
+			e.current.Store(engine)
+			e.engineType = "native"
+			e.lastModTime.Store(modTimeNano)
+			if e.cache != nil {
+				e.cache.InvalidateAll()
+			}
+			log.Println("PAC reloaded with native engine successfully")
+			return nil
+		}
+	}
+
+	// Fallback to JS compilation
 	vm := goja.New()
 	registerBuiltins(vm, e.cfg, e.dnsCache)
 	prog, err := goja.Compile(e.cfg.PACPath, string(src), false)
@@ -142,18 +185,18 @@ func (e *Evaluator) reload() error {
 	// Atomically swap
 	newPAC := &compiledPAC{prog: prog, modTime: modTime}
 	e.current.Store(newPAC)
-	log.Println("PAC reloaded successfully")
+	e.engineType = "js"
+	e.lastModTime.Store(modTimeNano)
+	// Invalidate cache on reload
+	if e.cache != nil {
+		e.cache.InvalidateAll()
+	}
+	log.Println("PAC reloaded with JS engine successfully")
 	return nil
 }
 
-// Evaluate executes the PAC script for the given host and returns a Route.
-// If evaluation fails or times out, returns the configured fallback route.
-func (e *Evaluator) Evaluate(host string) Route {
-	pacVal := e.current.Load()
-	if pacVal == nil {
-		return e.cfg.FallbackRoute
-	}
-	pac := pacVal.(*compiledPAC)
+// evaluateJS executes the PAC script using goja for the given host.
+func (e *Evaluator) evaluateJS(pac *compiledPAC, host string) Route {
 	vm := goja.New()
 	registerBuiltins(vm, e.cfg, e.dnsCache)
 	// Run PAC to define FindProxyForURL
@@ -194,8 +237,68 @@ func (e *Evaluator) Evaluate(host string) Route {
 	}
 }
 
+// Evaluate executes the PAC evaluation for the given host, using cache if enabled.
+func (e *Evaluator) Evaluate(host string) Route {
+	// Try cache first
+	if e.cache != nil {
+		if r, ok := e.cache.Get(host); ok {
+			return r
+		}
+	}
+
+	val := e.current.Load()
+	if val == nil {
+		return e.cfg.FallbackRoute
+	}
+
+	var r Route
+	switch v := val.(type) {
+	case *NativeRuleEngine:
+		r = v.Evaluate(host)
+	case *compiledPAC:
+		r = e.evaluateJS(v, host)
+	default:
+		log.Printf("[ERROR] Unknown engine type in Evaluator.current")
+		return e.cfg.FallbackRoute
+	}
+
+	// Cache the result
+	if e.cache != nil {
+		e.cache.Set(host, r)
+	}
+	return r
+}
+
+// CacheStats returns current cache statistics (hits, misses, size, maxSize, hitRate).
+// Returns zeros if cache is disabled.
+func (e *Evaluator) CacheStats() (hits, misses, size, maxSize int, hitRate float64) {
+	if e.cache == nil {
+		return 0, 0, 0, 0, 0
+	}
+	return e.cache.Stats()
+}
+
+// logCacheStatsLoop periodically logs cache statistics.
+func (e *Evaluator) logCacheStatsLoop() {
+	ticker := time.NewTicker(5 * time.Minute)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			hits, misses, size, maxSize, hitRate := e.cache.Stats()
+			log.Printf("[PAC cache] hits=%d misses=%d size=%d/%d hit_rate=%.2f%%",
+				hits, misses, size, maxSize, hitRate*100)
+		case <-e.stopped:
+			return
+		}
+	}
+}
+
 // Close stops background processes. Safe to call multiple times.
 func (e *Evaluator) Close() error {
 	e.closeOnce.Do(func() { close(e.stopped) })
+	if e.cache != nil {
+		e.cache.Close()
+	}
 	return nil
 }

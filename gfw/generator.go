@@ -17,13 +17,30 @@ type FWMeta struct {
 // GeneratePAC merges user rules and GFW rules into PAC JavaScript.
 // User rules are evaluated first (priority 1-99), GFW rules second (priority 100+).
 func GeneratePAC(userRules []Rule, gfwRules []Rule, meta FWMeta) string {
+	// Resolve routes: replace empty Route with DEFAULT if default proxy configured, else DIRECT
+	resolve := func(r Rule) Rule {
+		if r.Route == "" {
+			if meta.DefaultExternalProxy != "" {
+				r.Route = "DEFAULT"
+			} else {
+				r.Route = "DIRECT"
+			}
+		}
+		return r
+	}
+	resolvedUser := make([]Rule, len(userRules))
+	for i := range userRules {
+		resolvedUser[i] = resolve(userRules[i])
+	}
+	resolvedGFW := make([]Rule, len(gfwRules))
+	for i := range gfwRules {
+		resolvedGFW[i] = resolve(gfwRules[i])
+	}
+
 	var sb strings.Builder
 
-	// Build combined rules for JSON
-	allRules := make([]Rule, 0, len(userRules)+len(gfwRules))
-	allRules = append(allRules, userRules...)
-	allRules = append(allRules, gfwRules...)
-
+	// Build combined rules for JSON (use resolved rules)
+	allRules := append(resolvedUser, resolvedGFW...)
 	rf := RulesFile{Version: 1, Rules: allRules}
 	jsonData, _ := json.Marshal(rf)
 
@@ -37,9 +54,9 @@ func GeneratePAC(userRules []Rule, gfwRules []Rule, meta FWMeta) string {
 	sb.WriteString("function FindProxyForURL(url, host) {\n")
 
 	// User rules
-	if len(userRules) > 0 {
+	if len(resolvedUser) > 0 {
 		sb.WriteString("  // User rules\n")
-		for _, r := range userRules {
+		for _, r := range resolvedUser {
 			if !r.Enabled {
 				continue
 			}
@@ -48,9 +65,9 @@ func GeneratePAC(userRules []Rule, gfwRules []Rule, meta FWMeta) string {
 	}
 
 	// GFW rules
-	if len(gfwRules) > 0 {
+	if len(resolvedGFW) > 0 {
 		sb.WriteString("  // GFW rules\n")
-		for _, r := range gfwRules {
+		for _, r := range resolvedGFW {
 			if !r.Enabled {
 				continue
 			}

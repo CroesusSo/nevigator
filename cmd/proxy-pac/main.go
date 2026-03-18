@@ -38,6 +38,9 @@ type Config struct {
 		DNSTimeout     time.Duration `yaml:"dns_timeout"`
 		EvalTimeout    time.Duration `yaml:"eval_timeout"`
 		EnableDNSCache bool          `yaml:"enable_dns_cache"`
+		CacheEnabled   bool          `yaml:"cache_enabled"`
+		CacheMaxSize   int           `yaml:"cache_max_size"`
+		CacheTTL       time.Duration `yaml:"cache_ttl"`
 	} `yaml:"pac"`
 	GFW struct {
 		SourceURL        string        `yaml:"source_url"`
@@ -116,6 +119,9 @@ pac:
   dns_timeout: 500ms
   eval_timeout: 200ms
   enable_dns_cache: false
+  # cache_enabled: false
+  # cache_max_size: 10000
+  # cache_ttl: 10m
 
 gfw:
   source_url: "https://raw.githubusercontent.com/gfwlist/gfwlist/master/gfwlist.txt"
@@ -240,6 +246,9 @@ func main() {
 		DNSTimeout:     cfg.PAC.DNSTimeout,
 		EvalTimeout:    cfg.PAC.EvalTimeout,
 		EnableDNSCache: cfg.PAC.EnableDNSCache,
+		CacheEnabled:   cfg.PAC.CacheEnabled,
+		CacheMaxSize:   cfg.PAC.CacheMaxSize,
+		CacheTTL:       cfg.PAC.CacheTTL,
 		FallbackRoute:  pac.Route{Strategy: "DIRECT"},
 	}
 	evaluator, err := pac.NewEvaluator(evalCfg)

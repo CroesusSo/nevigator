@@ -67,6 +67,11 @@ type EvaluatorConfig struct {
 	EnableDNSCache   bool          // Enable in-memory DNS cache
 	CustomDNSServers []string      `yaml:"custom_dns_servers" json:"custom_dns_servers"` // Optional custom DNS servers
 	FallbackRoute    Route         // Used when PAC fails
+
+	// Cache configuration for native rule engine
+	CacheEnabled bool          `yaml:"cache_enabled" json:"cache_enabled"`
+	CacheMaxSize int           `yaml:"cache_max_size" json:"cache_max_size"`
+	CacheTTL     time.Duration `yaml:"cache_ttl" json:"cache_ttl"`
 }
 
 // RouterConfig holds configuration for the Router.
