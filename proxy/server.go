@@ -52,10 +52,19 @@ func NewServer(cfg pac.ProxyConfig, evaluator *pac.Evaluator, router *router.Rou
 		tunDevice:  cfg.TUNDevice,
 	}
 	mux := http.NewServeMux()
-	mux.HandleFunc("/", s.handleHTTPConnect)
+
+	// Top-level handler: intercept CONNECT, otherwise delegate to mux (admin/API)
+	topHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodConnect {
+			s.handleHTTPConnect(w, r)
+			return
+		}
+		mux.ServeHTTP(w, r)
+	})
+
 	s.httpServer = &http.Server{
 		Addr:    cfg.HTTPListen,
-		Handler: mux,
+		Handler: topHandler,
 	}
 
 	// Initialize TLS config if TLS settings are provided
@@ -75,7 +84,7 @@ func NewServer(cfg pac.ProxyConfig, evaluator *pac.Evaluator, router *router.Rou
 		} else {
 			s.httpsServer = &http.Server{
 				Addr:    cfg.HTTPSListen,
-				Handler: mux,
+				Handler: topHandler,
 			}
 			// Start HTTPS listener in a separate goroutine
 			go func() {
@@ -306,7 +315,7 @@ func (s *Server) handleHTTPConnect(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	host, portStr, err := net.SplitHostPort(r.URL.Path)
+	host, portStr, err := net.SplitHostPort(r.Host)
 	if err != nil {
 		http.Error(w, "Invalid CONNECT path", http.StatusBadRequest)
 		return
