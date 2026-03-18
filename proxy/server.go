@@ -400,8 +400,13 @@ func (s *Server) handleHTTPSConnect(w http.ResponseWriter, r *http.Request, host
 		return
 	}
 
-	// Send success response to client
-	clientConn.Write([]byte("HTTP/1.1 200 Connection Established\r\n\r\n"))
+	// Send success response to client over TLS
+	_, err = tlsConn.Write([]byte("HTTP/1.1 200 Connection Established\r\n\r\n"))
+	if err != nil {
+		log.Printf("Failed to write CONNECT success response: %v", err)
+		tlsConn.Close()
+		return
+	}
 
 	// Track the connection
 	protocol := "https"

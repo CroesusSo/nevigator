@@ -30,13 +30,13 @@
 .directory
 .Trash-*
 .nfs*
-.idea
-.vscode
-.atom
-.project
-.settings
-*_test.go
-*.cover
+	.idea
+	.vscode
+	.atom
+	.project
+	.settings
+	# *_test.go
+	*.cover
 coverage.txt
 cover.out
 .terraform
