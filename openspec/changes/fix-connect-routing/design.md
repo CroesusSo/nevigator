@@ -42,10 +42,17 @@ In `proxy.NewServer`, after building the `mux`, create the `topHandler` and assi
 
 - **Why not create separate wrappers?** One wrapper is sufficient; both servers share the same logic.
 
+**Decision 3: HTTPS CONNECT uses the existing TLS connection**
+
+The HTTPS listener wraps the listener with `tls.NewListener`, so each connection is already encrypted when it reaches the HTTP server. `handleHTTPSConnect` hijacks the connection and uses it directly—**no additional TLS handshake** occurs. This avoids double encryption and ensures the CONNECT response is written on the correct encrypted channel.
+
+- **Implementation:** After hijacking, we obtain a `tls.Conn` (if the listener is HTTPS). We extract SNI from `tlsConn.ConnectionState()` if needed, then write the `200 Connection Established` response directly to that `tls.Conn`. Outbound data is relayed using the same connection.
+
 ## Risks / Trade-offs
 
 - **Risk:** Malformed non-CONNECT requests with unusual paths might still be handled by the mux as before. Mitigation: none needed; behavior unchanged.
 - **Trade-off:** The wrapper adds one extra function call before every non-CONNECT request (negligible overhead).
+- **Risk:** If the configuration erroneously starts an HTTPS server without a valid TLS cert, the listener will fail; existing warnings are unchanged.
 
 ## Migration Plan
 
