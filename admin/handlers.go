@@ -542,7 +542,7 @@ let gfwRules = [];
        if (name === 'summary') loadStatus();
        if (name === 'connections') loadConnections();
        if (name === 'rules') loadRules();
-       if (name === 'gfw') loadGFWStatus();
+       if (name === 'gfw') { loadGFWStatus(); loadConfig(); }
   if (name === 'proxies') { loadProxies(); loadConfig(); }
   if (name === 'settings') { loadConfig(); }
      }
@@ -1324,7 +1324,7 @@ func (h *Handler) handleSavePAC(w http.ResponseWriter, r *http.Request) {
 
 	// Atomic write: tmp file + rename
 	tmpPath := h.pacPath + ".tmp"
-	if err := os.WriteFile(tmpPath, []byte(content), 0644); err != nil {
+	if err := os.WriteFile(tmpPath, []byte(content), 0o644); err != nil {
 		log.Printf("Failed to write PAC tmp file: %v", err)
 		http.Error(w, "Failed to write file", http.StatusInternalServerError)
 		return
@@ -1742,7 +1742,7 @@ func (h *Handler) handlePutGFWConfig(w http.ResponseWriter, r *http.Request) {
 				} else {
 					// Write atomically
 					tmpPath := h.configPath + ".tmp"
-					if err := os.WriteFile(tmpPath, out, 0644); err != nil {
+					if err := os.WriteFile(tmpPath, out, 0o644); err != nil {
 						log.Printf("[Admin] Failed to write config tmp: %v", err)
 					} else if err := os.Rename(tmpPath, h.configPath); err != nil {
 						os.Remove(tmpPath)
@@ -1776,7 +1776,7 @@ func (h *Handler) writeFullConfig(cfg FullConfig) error {
 		return fmt.Errorf("marshal config: %w", err)
 	}
 	tmpPath := h.configPath + ".tmp"
-	if err := os.WriteFile(tmpPath, out, 0644); err != nil {
+	if err := os.WriteFile(tmpPath, out, 0o644); err != nil {
 		return fmt.Errorf("write config tmp: %w", err)
 	}
 	if err := os.Rename(tmpPath, h.configPath); err != nil {
