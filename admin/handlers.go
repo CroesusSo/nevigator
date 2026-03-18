@@ -1128,25 +1128,38 @@ let gfwRules = [];
           .catch(e => alert('Error: ' + e.message));
       }
 
-       function loadConfig() {
-         fetch('/api/config').then(r => r.json()).then(cfg => {
-           currentDefaultProxy = cfg.default_external_proxy || '';
-           document.getElementById('default-proxy-select').value = currentDefaultProxy;
-           if (document.getElementById('http-listen')) document.getElementById('http-listen').value = cfg.http_listen || '';
-           if (document.getElementById('socks5-listen')) document.getElementById('socks5-listen').value = cfg.socks5_listen || '';
-           if (document.getElementById('admin-listen')) document.getElementById('admin-listen').value = cfg.admin_listen || '';
-           if (document.getElementById('https-listen')) document.getElementById('https-listen').value = cfg.https_listen || '';
-           if (document.getElementById('pac-path')) document.getElementById('pac-path').value = cfg.pac_path || '';
-           if (document.getElementById('tun-device')) document.getElementById('tun-device').value = cfg.tun_device || '';
-           // TLS fields
-           if (document.getElementById('tls-certificate')) document.getElementById('tls-certificate').value = cfg.tls?.certificate_file || '';
-           if (document.getElementById('tls-key')) document.getElementById('tls-key').value = cfg.tls?.key_file || '';
-           if (document.getElementById('tls-ca')) document.getElementById('tls-ca').value = cfg.tls?.ca_file || '';
-           if (document.getElementById('tls-client-auth')) document.getElementById('tls-client-auth').value = cfg.tls?.client_auth || '';
-         }).catch(err => {
-           console.error('Failed to load config:', err);
-         });
-       }
+        function loadConfig() {
+          // Load main proxy config
+          fetch('/api/config').then(r => r.json()).then(cfg => {
+            currentDefaultProxy = cfg.default_external_proxy || '';
+            document.getElementById('default-proxy-select').value = currentDefaultProxy;
+            if (document.getElementById('http-listen')) document.getElementById('http-listen').value = cfg.http_listen || '';
+            if (document.getElementById('socks5-listen')) document.getElementById('socks5-listen').value = cfg.socks5_listen || '';
+            if (document.getElementById('admin-listen')) document.getElementById('admin-listen').value = cfg.admin_listen || '';
+            if (document.getElementById('https-listen')) document.getElementById('https-listen').value = cfg.https_listen || '';
+            if (document.getElementById('pac-path')) document.getElementById('pac-path').value = cfg.pac_path || '';
+            if (document.getElementById('tun-device')) document.getElementById('tun-device').value = cfg.tun_device || '';
+            // TLS fields
+            if (document.getElementById('tls-certificate')) document.getElementById('tls-certificate').value = cfg.tls?.certificate_file || '';
+            if (document.getElementById('tls-key')) document.getElementById('tls-key').value = cfg.tls?.key_file || '';
+            if (document.getElementById('tls-ca')) document.getElementById('tls-ca').value = cfg.tls?.ca_file || '';
+            if (document.getElementById('tls-client-auth')) document.getElementById('tls-client-auth').value = cfg.tls?.client_auth || '';
+          }).catch(err => {
+            console.error('Failed to load config:', err);
+          });
+
+          // Load GFW config to show source URL
+          fetch('/api/gfw/config')
+            .then(r => r.json())
+            .then(data => {
+              if (document.getElementById('gfw-url')) {
+                document.getElementById('gfw-url').value = data.sourceURL || '';
+              }
+            })
+            .catch(err => {
+              console.error('Failed to load GFW config:', err);
+            });
+        }
 
        function saveConfig() {
          const payload = {
