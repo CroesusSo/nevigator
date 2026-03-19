@@ -37,12 +37,13 @@ pac:
   enable_url_glob: false   # set to true to preserve URL-glob rules (not recommended; native engine does not support URL-glob)
   dns_timeout: 500ms
   eval_timeout: 200ms
-   enable_dns_cache: true
-    dns_max_entries: 100    # max DNS cache entries (0 = unlimited)
-    dns_ttl: 5m             # TTL for DNS cache entries
-    cache_enabled: true
-    cache_max_size: 10000
-    cache_ttl: 10m
+  enable_dns_cache: true
+  dns_max_entries: 100     # max DNS cache entries (0 = unlimited)
+  dns_ttl: 5m              # TTL for DNS cache entries
+  cache_enabled: true
+  cache_max_size: 10000    # maximum number of entries
+  cache_ttl: 10m           # time-to-live
+  deepest_match: false     # use deepest/specific match semantics instead of first-match
 ```
 
 Run:
@@ -66,7 +67,7 @@ An LRU cache with configurable TTL stores recent host→route results, further r
 
 ### URL‑Glob Limitation
 
-URL‑glob rules (`shExpMatch(url, ...)`) are **not supported** in native mode because the proxy only sees the hostname for CONNECT requests. Such rules are ignored with a warning log, same as in JS mode.
+URL‑glob rules (`shExpMatch(url, ...)`) are **not supported** because the proxy only sees the hostname for CONNECT requests. Such rules are ignored with a warning log.
 
 ### Configuration
 
@@ -81,6 +82,33 @@ pac:
 
 If `cache_enabled` is true but `cache_max_size` or `cache_ttl` are not set, defaults are 10000 entries and 10 minutes.
 
+### Deepest Match Semantics
+
+By default, the native rule engine selects the rule with the **lowest index** when multiple rules match (first‑match semantics). Setting `deepest_match: true` changes the matching behavior to prefer the **most specific** rule:
+
+- **Domain suffix**: longest matching suffix wins (e.g., `.google.com` beats `.com`)
+- **Host glob**: patterns with higher specificity score (longer, fewer wildcards) are evaluated first
+
+Exact matches are unaffected. This feature is useful when you want intuitive "most specific" routing without manually reordering rules. It is **opt‑in** and disabled by default for backward compatibility.
+
+Example:
+
+```yaml
+pac:
+  deepest_match: true
+```
+
+With rules:
+
+| Index | Pattern          | Route   |
+|-------|------------------|---------|
+| 0     | `.com`           | SOCKS5  |
+| 1     | `.google.com`    | TUN     |
+
+For `mail.google.com`:
+- `deepest_match: false` → rule 0 wins (lower index) → SOCKS5
+- `deepest_match: true`  → rule 1 wins (longer suffix) → TUN
+
 ## Admin UI
 
 Open `http://localhost:9090` in browser to:
@@ -91,30 +119,48 @@ Open `http://localhost:9090` in browser to:
 - **Proxies tab**: manage external SOCKS5 proxies, set default, test connectivity
 - **Settings tab**: view and edit listening addresses, PAC path, and TUN device
 
-## PAC Script
+## PAC Script Format
 
-PAC must define `FindProxyForURL(url, host)` and return one of:
-- `"TUN"` - route via TUN device
-- `"SOCKS5 host:port"` - route via SOCKS5 upstream
-- `"EXTERNAL <id>"` - route via an external proxy defined in the main configuration
-- `"DEFAULT"` - use the default external proxy (if configured)
-- `"DIRECT"` - system default route
+**Important:** This proxy uses a **native rule engine only** — it does **not** execute arbitrary JavaScript PAC functions. PAC files must contain a special `__PAC_RULES__` JSON variable with structured rules. The `FindProxyForURL` function is required but ignored; it's just a placeholder to maintain compatibility with the PAC file format.
 
-**External Proxies** are defined in the main `config.yaml` under `proxy.external_proxies`. Each has an `id`, `address`, and optional `username`/`password`.
+Rules are typically created and edited through the **Web Admin UI**, which generates the correct `__PAC_RULES__` structure automatically. You can also edit the PAC file directly as JSON.
 
-Example:
+### Rule Structure
+
+Each rule in `__PAC_RULES__` has:
+
+- `id` – unique identifier
+- `match` – match type: `exact`, `domain_suffix`, `host_glob` (URL-glob not supported)
+- `value` – pattern to match (e.g., `"example.com"`, `".google.com"`, `"*.onion"`)
+- `route` – one of: `"TUN"`, `"SOCKS5 host:port"`, `"EXTERNAL <id>"`, `"DEFAULT"`, `"DIRECT"`
+- `enabled` – boolean
+
+### Example PAC File
 
 ```javascript
-function FindProxyForURL(url, host) {
-  if (dnsDomainIs(host, ".internal.example")) {
-    return "TUN";
-  }
-  if (shExpMatch(host, "*.onion")) {
-    return "SOCKS5 127.0.0.1:9050";
-  }
-  return "DIRECT";
-}
+var __PAC_RULES__ = {"version":1,"rules":[
+  {"id":"1","match":"exact","value":"example.com","route":"TUN"},
+  {"id":"2","match":"domain_suffix","value":".google.com","route":"SOCKS5 127.0.0.1:9050"},
+  {"id":"3","match":"host_glob","value":"*.onion","route":"DIRECT"}
+]};
+function FindProxyForURL(url, host) { return 'DIRECT'; }
 ```
+
+**External Proxies** are defined in `config.yaml` under `proxy.external_proxies`. Each has an `id`, `address`, and optional `username`/`password`. Use `"EXTERNAL <id>"` to route through them.
+
+### Configuration Options
+
+Under the `pac` section in `config.yaml`:
+
+- `deepest_match: false` – When true, prefer the most specific suffix/glob instead of lowest index
+- `cache_enabled: true` – Enable result caching
+- `cache_max_size: 10000` – Max cached hosts
+- `cache_ttl: 10m` – TTL for cached entries
+- `enable_dns_cache: true` – Enable DNS lookup caching (for `dnsResolve` not used in native mode but retained for compatibility)
+- `dns_max_entries: 100` – Max DNS cache entries
+- `dns_ttl: 5m` – DNS TTL
+
+For full details, see the [Native Rule Engine](#native-rule-engine) section.
 
 ## How It Works
 
@@ -126,15 +172,6 @@ function FindProxyForURL(url, host) {
    - DIRECT: normal net.Dial (uses OS routing)
 4. If route fails (except DIRECT), automatically retries with DIRECT
 5. Data is relayed between client and outbound
-
-## Supported PAC Built-ins
-
-- `shExpMatch(str, pattern)`
-- `dnsDomainIs(domain, pattern)`
-- `isInNet(ip, pattern, mask)`
-- `myIpAddress()` (returns configured TUN IP)
-- `dnsResolve(hostname)` (with timeout and cache)
-- `isResolvable(hostname)`
 
 ## Deployment
 

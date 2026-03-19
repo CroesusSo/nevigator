@@ -4,24 +4,31 @@
 
 This system implements a high-performance proxy server that:
 - Accepts HTTP CONNECT and SOCKS5 client connections
-- Executes PAC (Proxy Auto-Config) scripts to determine routing per destination
+- Evaluates **structured routing rules** (not JavaScript) to determine outbound path
 - Supports three routing strategies:
   - `TUN`: force traffic through a TUN device (VPN tunnel)
   - `SOCKS5 upstream`: route through a remote SOCKS5 server
   - `DIRECT`: use system default routing (respects OS routing table)
 - Falls back to `DIRECT` if the chosen route fails
-- Provides a web-based admin UI for PAC management and hot-reload
+- Provides a web-based admin UI for rule management and hot-reload
+
+**Important:** The proxy uses a **native Go rule engine only**. It does **not** execute arbitrary JavaScript PAC files. Routing decisions are made from structured JSON rules embedded in the PAC file via the `__PAC_RULES__` variable.
 
 ## Key Interfaces
 
-### PAC Evaluator
+### Route
 
 ```go
 type Route struct {
-    Strategy string // "TUN", "SOCKS5", "DIRECT"
-    Address  string // required for SOCKS5
+    Strategy   string // "TUN", "SOCKS5", "DIRECT", "EXTERNAL", "DEFAULT"
+    Address    string // required for SOCKS5
+    ExternalID string // used when Strategy == "EXTERNAL"
 }
+```
 
+### Evaluator
+
+```go
 type Evaluator interface {
     Evaluate(host string) Route
     Reload()
@@ -29,11 +36,13 @@ type Evaluator interface {
 }
 ```
 
+The evaluator loads a PAC file containing `__PAC_RULES__` JSON, builds indexes (exact map, suffix trie, host globs), and returns the best matching route for a given hostname.
+
 ### Router
 
 ```go
 type Router interface {
-    Route(clientConn net.Conn, route Route) (net.Conn, error)
+    Route(dest string, route Route) (net.Conn, error)
     Close() error
 }
 ```
@@ -42,27 +51,54 @@ type Router interface {
 
 - HTTP CONNECT: `:8080`
 - SOCKS5: `:1080`
+- HTTPS CONNECT (TLS-wrapped): `:8443` (optional)
 - Admin UI/API: `:9090`
 
 ## Behavior
 
-1. Client connects and requests a destination host:port (via CONNECT or SOCKS5 CONNECT)
-2. Proxy calls `Evaluator.Evaluate(host)` to get a single `Route`
-3. Router attempts to establish outbound connection according to `route`
-4. If that fails and `route != DIRECT`, Router silently retries with `DIRECT`
-5. On success, proxy relays bytes between client and outbound
-6. Admin modifies PAC file → UI triggers reload → Evaluator recompiles → new routing decisions
+1. Client connects and requests a destination `host:port` (via CONNECT or SOCKS5 CONNECT)
+2. Proxy parses destination hostname from request
+3. Calls `Evaluator.Evaluate(host)` to obtain a `Route`
+4. Router establishes outbound connection according to `route`:
+   - `TUN`: binds socket to TUN interface IP
+   - `SOCKS5`: connects to upstream SOCKS5 server and performs handshake
+   - `EXTERNAL <id>`: looks up proxy from registry by ID
+   - `DEFAULT`: uses the configured default external proxy
+   - `DIRECT`: normal `net.Dial` (OS routing)
+5. If route establishment fails (and `route != DIRECT`), Router automatically retries with `DIRECT`
+6. On success, proxy relays bytes bidirectionally between client and outbound
+7. Admin modifies PAC file → evaluator reloads → new routing decisions take effect
 
-## PAC Script Requirements
+## PAC File Format
 
-- Must define `FindProxyForURL(url, host)` function
-- Should return one of: `"TUN"`, `"SOCKS5 host:port"`, `"DIRECT"`
-- Other return values are treated as `DIRECT`
-- `myIpAddress()` returns the configured TUN IP (or static config)
+PAC files **must** contain a JavaScript variable `__PAC_RULES__` with a JSON object:
 
-## Supported Built-ins
+```javascript
+var __PAC_RULES__ = {"version":1,"rules":[
+  {"id":"1","match":"exact","value":"example.com","route":"TUN"},
+  {"id":"2","match":"domain_suffix","value":".google.com","route":"SOCKS5 127.0.0.1:9050"},
+  {"id":"3","match":"host_glob","value":"*.onion","route":"DIRECT"}
+]};
+function FindProxyForURL(url, host) { return 'DIRECT'; }
+```
 
-`shExpMatch`, `dnsDomainIs`, `isInNet`, `myIpAddress`, `dnsResolve`, `isResolvable`
+The `FindProxyForURL` function is **ignored**; it exists only to satisfy legacy PAC file parsers. The actual routing logic is entirely driven by `__PAC_RULES__`.
+
+### Rule Fields
+
+- `id`: unique string identifier
+- `match`: match type — `exact`, `domain_suffix`, `host_glob` (URL-glob not supported)
+- `value`: pattern to match (exact hostname, leading dot for suffix, `*` wildcards for host glob)
+- `route`: routing decision — `"TUN"`, `"SOCKS5 host:port"`, `"EXTERNAL <id>"`, `"DEFAULT"`, `"DIRECT"`
+- `enabled`: boolean (default true)
+
+Rules are evaluated in order of ascending `id` (user-defined order) unless `deepest_match: true` is configured, which changes semantics for suffix and host glob:
+- Suffix: longest matching suffix wins (most specific)
+- Host glob: sorted by specificity score (longer, fewer wildcards first), index as tie-breaker
+
+### Example PAC Generation
+
+The `gfw.GeneratePAC` function produces `__PAC_RULES__` from user and GFW rules. This is used by the admin UI and GFW fetcher.
 
 ## Configuration
 
@@ -71,37 +107,61 @@ proxy:
   http_listen: 0.0.0.0:8080
   socks5_listen: 0.0.0.0:1080
   admin_listen: 127.0.0.1:9090
+  pac_path: /etc/proxy.pac
   tun_device: tun0
+  default_external_proxy: ""
+  external_proxies: []  # list of {id, address, username, password}
 
 pac:
-  file: /etc/proxy.pac
-  local_ip: ""            # auto-detected from tun0 if empty
-  dns_timeout: 500ms
-  eval_timeout: 200ms
-  enable_dns_cache: true
+  deepest_match: false    # use deepest/specific match semantics instead of first-match
+  enable_dns_cache: true  # DNS cache for internal lookups (not used for user PAC)
+  dns_max_entries: 100    # max DNS cache entries (0 = unlimited)
+  dns_ttl: 5m             # DNS cache TTL
+  cache_enabled: true     # enable PAC result caching
+  cache_max_size: 10000   # max cached hosts
+  cache_ttl: 10m          # cache TTL
+
+gfw:
+  source_url: "https://..."
+  fetch_on_startup: true
+  update_interval: 24h
 ```
+
+## Native Rule Engine
+
+The native engine provides **>100× performance improvement** over a JavaScript interpreter, with evaluation typically in sub‑microseconds.
+
+### Indexes
+
+- **Exact map**: `map[host]route` for O(1) exact matches
+- **Domain suffix trie**: reversed‑label trie for efficient suffix matching (O(depth))
+- **Host glob patterns**: compiled regexes stored in a slice; evaluated in order
+
+### Performance
+
+- Un cached evaluation: < 1 µs for simple rule sets
+- LRU cache (optional) can serve repeated hosts in < 100 ns
+- Memory footprint: ~1 MB for 10k cached entries
 
 ## Non-Functional
 
-- **Performance**: Sub-millisecond PAC evaluation for simple scripts; < 5ms average
-- **Reliability**: Hot-reload without dropping connections; automatic fallback
-- **Safety**: PAC errors never break connectivity; fallback to DIRECT
-- **Resource**: ~5MB memory baseline; per-request VM ~100KB (short-lived)
+- **Performance**: Sub-microsecond native evaluation; cache hit < 100 ns
+- **Reliability**: Hot‑reload without dropping connections; automatic fallback to DIRECT
+- **Safety**: Syntax errors in PAC file are logged; fallback route used; connectivity never broken
+- **Resource**: Baseline memory ~5 MB; cache adds ~1 MB for 10k entries
 
 ## Dependencies
 
 - Go 1.21+
-- `github.com/dop251/goja` (JS runtime)
-- `golang.org/x/net/proxy` (SOCKS5 client)
 - `github.com/fsnotify/fsnotify` (file watching)
+- `gopkg.in/yaml.v3` (config parsing)
+- `github.com/yourorg/proxy-pac/gfw` (rule generation)
 
-## Deployment
-
-Runs as a single binary. Systemd service recommended. Requires TUN device to be present (e.g., managed by separate VPN client). Admin UI binds to localhost by default.
+*Note:* The `github.com/dop251/goja` JavaScript runtime is **not** used.
 
 ## Testing
 
-Unit tests for builtins, evaluator, router; integration tests for HTTP CONNECT and SOCKS5 flows; end-to-end with real PAC scripts.
+Unit tests for native engine (exact, suffix, host glob, deepest match), cache, DNS cache; integration tests for HTTP CONNECT, SOCKS5, HTTPS proxy; end‑to‑end with generated PAC.
 
 ## Future Extensions
 
@@ -111,79 +171,14 @@ Unit tests for builtins, evaluator, router; integration tests for HTTP CONNECT a
 - Client authentication
 - Prometheus metrics
 - PAC visual editor
+- Eventually make `deepest_match` the default (with deprecation period)
 
-## ADDED Requirements
+## ADDED Requirements (from external-proxy-registry)
 
-### Requirement: External Proxy Registry
-The system SHALL maintain a registry of external SOCKS5 proxies defined in configuration and manageable via admin UI and API. Each proxy entry SHALL include:
-- `id`: unique string identifier (non-empty, not reserved)
-- `address`: valid `host:port` string
-- `username` (optional)
-- `password` (optional)
+The full external proxy registry and DEFAULT behavior are documented in `openspec/specs/external-proxy-registry/spec.md`. Key points:
 
-The registry SHALL be used by the router to resolve `EXTERNAL <id>` and `DEFAULT` routing strategies.
-
-#### Scenario: Add new external proxy via API
-- **WHEN** an administrator POSTs `/api/proxies` with valid JSON body containing `id`, `address`, and optional credentials
-- **THEN** the proxy SHALL be added to the registry
-- **AND** the config file SHALL be updated atomically
-- **AND** the router's internal registry SHALL be updated immediately
-
-#### Scenario: List external proxies (no credentials)
-- **WHEN** an administrator GETs `/api/proxies`
-- **THEN** the response SHALL be a JSON array of objects containing `id`, `address`, and `has_auth` (boolean), without `password`
-
-#### Scenario: Update external proxy
-- **WHEN** an administrator PUTs `/api/proxies/:id` with updated fields
-- **THEN** the existing proxy SHALL be updated (immutable `id` cannot be changed)
-- **AND** if `password` is omitted, the existing password SHALL be preserved
-- **AND** the registry SHALL be updated
-
-#### Scenario: Delete external proxy
-- **WHEN** an administrator DELETE `/api/proxies/:id`
-- **THEN** the proxy SHALL be removed from the registry
-- **AND** any rules referencing it SHALL produce `EXTERNAL <id>` in PAC but will fail at routing time (fallback to DIRECT)
-
-#### Scenario: Test connectivity to an unsaved proxy
-- **WHEN** an administrator POSTs `/api/proxies/test` with address and credentials
-- **THEN** the system SHALL attempt a TCP connection followed by SOCKS5 greeting and optional username/password authentication
-- **AND** return `{ "success": true }` on successful handshake, or `{ "success": false, "error": "..."} ` on failure
-
-#### Scenario: Test connectivity to a saved proxy
-- **WHEN** an administrator POSTs `/api/proxies/:id/test`
-- **THEN** the system SHALL load the stored proxy definition from config
-- **AND** perform the same connectivity test
-- **AND** return the result
-
-#### Scenario: Preventing loops
-- **WHEN** an external proxy address uses `127.0.0.1`, `localhost`, or `::1` and its port matches any of this proxy's listening ports (HTTP, SOCKS5, Admin)
-- **THEN** the API SHALL reject the request with HTTP 400 and appropriate error message
-- **AND** the config SHALL NOT be updated
-
-#### Scenario: Reserved ID validation
-- **WHEN** an external proxy `id` is `"DIRECT"`, `"TUN"`, or `"DEFAULT"`
-- **THEN** the API SHALL reject the request with HTTP 400
-
-#### Scenario: Duplicate ID validation
-- **WHEN** an external proxy with an `id` that already exists in the registry is created (or an update tries to change ID to an existing one)
-- **THEN** the API SHALL reject the request with HTTP 409 Conflict
-
-### Requirement: Default External Proxy
-The system SHALL allow administrators to designate one registered external proxy as the default via `proxy.default_external_proxy` in configuration or via admin API. The special PAC return value `"DEFAULT"` SHALL instruct the router to use this default proxy. Additionally, the PAC generator SHALL use `"DEFAULT"` for rules with empty route when a default proxy is configured (falling back to legacy hardcoded SOCKS5 when no default is set).
-
-#### Scenario: Router uses default proxy
-- **WHEN** `Evaluator.Evaluate(host)` returns `Route{Strategy: "DEFAULT"}`
-- **THEN** the router SHALL look up the configured `default_external_proxy` ID in the registry
-- **AND** establish a SOCKS5 connection through that proxy
-- **IF** the default proxy is not configured or not found, the router SHALL return an error, causing `Route` to fallback to DIRECT
-
-#### Scenario: PAC generator emits DEFAULT
-- **GIVEN** `proxy.default_external_proxy` is set to `"tor"`
-- **WHEN** `gfw.GeneratePAC` is called with a rule having empty `Route`
-- **THEN** the generated PAC SHALL contain `return "DEFAULT";` for that rule
-- **IF** no default is set, the generator SHALL use `return "SOCKS5 127.0.0.1:1080";` (legacy behavior)
-
-#### Scenario: Changing default proxy triggers PAC regeneration
-- **WHEN** an administrator updates `default_external_proxy` via `/api/config`
-- **THEN** the router's default proxy ID SHALL be updated immediately
-- **AND** the PAC file SHALL be regenerated so that GFW rules (with empty route) now point to `DEFAULT`
+- Registry of external SOCKS5 proxies with optional credentials
+- Manageable via Admin UI and `/api/proxies` REST API
+- `EXTERNAL <id>` and `DEFAULT` route strategies look up proxies from this registry
+- Validation to prevent loops and reserved IDs
+- Atomic config updates

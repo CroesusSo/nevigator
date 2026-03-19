@@ -1,15 +1,16 @@
 ## ADDED Requirements
 
 ### Requirement: PAC save with validation
-The system SHALL accept PAC content via POST to `/pac`, validate it by compiling in a fresh goja VM, and write it to disk only if compilation succeeds.
+
+The system SHALL accept PAC content via POST to `/pac`, validate it by parsing the `__PAC_RULES__` JSON structure and verifying rule syntax, and write it to disk only if validation succeeds.
 
 #### Scenario: Valid PAC saved successfully
-- **WHEN** user POSTs valid PAC JavaScript to `/pac`
+- **WHEN** user POSTs valid PAC with well‑formed `__PAC_RULES__` to `/pac`
 - **THEN** system writes file atomically (tmp + rename) and returns 200
 
 #### Scenario: Invalid PAC rejected
-- **WHEN** user POSTs PAC with JavaScript syntax errors to `/pac`
-- **THEN** system returns 422 with error message describing the compile failure
+- **WHEN** user POSTs PAC with malformed JSON or invalid rule structure to `/pac`
+- **THEN** system returns 422 with error message describing the validation failure
 - **AND** no file is written to disk
 
 #### Scenario: Empty PAC rejected
@@ -17,6 +18,7 @@ The system SHALL accept PAC content via POST to `/pac`, validate it by compiling
 - **THEN** system returns 422 with "empty PAC content" error
 
 ### Requirement: Atomic PAC file write
+
 The system SHALL use atomic file operations to prevent partial writes on crash.
 
 #### Scenario: Atomic write with temp file
