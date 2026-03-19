@@ -1,6 +1,7 @@
 package pac
 
 import (
+	"container/list"
 	"context"
 	"fmt"
 	"net"
@@ -12,24 +13,29 @@ import (
 type dnsCacheEntry struct {
 	addrs   []string
 	expires time.Time
+	element *list.Element // pointer into lruList
 }
 
 // dnsCache is a simple in-memory DNS cache.
 type dnsCache struct {
-	mu       sync.RWMutex
-	store    map[string]dnsCacheEntry
-	ttl      time.Duration
-	enabled  bool          // caching enabled flag
-	resolver *net.Resolver // optional custom resolver
+	mu         sync.RWMutex
+	store      map[string]dnsCacheEntry
+	lruList    *list.List // keys, front = MRU
+	maxEntries int        // 0 = unlimited
+	ttl        time.Duration
+	enabled    bool          // caching enabled flag
+	resolver   *net.Resolver // optional custom resolver
 }
 
-func newDNSCache(ttl time.Duration) *dnsCache {
+func newDNSCache(ttl time.Duration, maxEntries int) *dnsCache {
 	if ttl == 0 {
 		ttl = 5 * time.Minute
 	}
 	return &dnsCache{
-		store: make(map[string]dnsCacheEntry),
-		ttl:   ttl,
+		store:      make(map[string]dnsCacheEntry),
+		ttl:        ttl,
+		lruList:    list.New(),
+		maxEntries: maxEntries,
 	}
 }
 
@@ -43,6 +49,16 @@ func (c *dnsCache) get(host string) ([]string, bool) {
 	if !ok || time.Now().After(entry.expires) {
 		return nil, false
 	}
+	// Move to front of LRU list on hit
+	if c.lruList != nil {
+		c.mu.Lock()
+		if entry, ok := c.store[host]; ok {
+			if entry.element != nil {
+				c.lruList.MoveToFront(entry.element)
+			}
+		}
+		c.mu.Unlock()
+	}
 	return entry.addrs, true
 }
 
@@ -51,11 +67,38 @@ func (c *dnsCache) set(host string, addrs []string) {
 		return
 	}
 	c.mu.Lock()
-	c.store[host] = dnsCacheEntry{
+	defer c.mu.Unlock()
+
+	now := time.Now()
+	entry := dnsCacheEntry{
 		addrs:   addrs,
-		expires: time.Now().Add(c.ttl),
+		expires: now.Add(c.ttl),
 	}
-	c.mu.Unlock()
+
+	// If already exists, update and move to front
+	if existing, ok := c.store[host]; ok {
+		entry.element = existing.element
+		existing.element.Value = host // update value (should be same)
+		c.lruList.MoveToFront(entry.element)
+		c.store[host] = entry
+		return
+	}
+
+	// New entry: create element and add to front
+	element := c.lruList.PushFront(host)
+	entry.element = element
+	c.store[host] = entry
+
+	// Evict if over capacity
+	if c.maxEntries > 0 && len(c.store) > c.maxEntries {
+		// Remove least recently used (back of list)
+		oldest := c.lruList.Back()
+		if oldest != nil {
+			oldHost := oldest.Value.(string)
+			delete(c.store, oldHost)
+			c.lruList.Remove(oldest)
+		}
+	}
 }
 
 // lookupHost performs a DNS lookup with timeout.

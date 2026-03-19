@@ -90,6 +90,8 @@ type FullConfig struct {
 		DNSTimeout     time.Duration `yaml:"dns_timeout" json:"dns_timeout"`
 		EvalTimeout    time.Duration `yaml:"eval_timeout" json:"eval_timeout"`
 		EnableDNSCache bool          `yaml:"enable_dns_cache" json:"enable_dns_cache"`
+		DNSMaxEntries  int           `yaml:"dns_max_entries" json:"dns_max_entries"`
+		DNSTTL         time.Duration `yaml:"dns_ttl" json:"dns_ttl"`
 		CacheEnabled   bool          `yaml:"cache_enabled" json:"cache_enabled"`
 		CacheMaxSize   int           `yaml:"cache_max_size" json:"cache_max_size"`
 		CacheTTL       time.Duration `yaml:"cache_ttl" json:"cache_ttl"`

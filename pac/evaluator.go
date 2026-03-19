@@ -47,7 +47,14 @@ func NewEvaluator(cfg EvaluatorConfig) (*Evaluator, error) {
 		stopped: make(chan struct{}),
 	}
 	// Always create dnsCache; caching behavior controlled by enabled flag
-	e.dnsCache = newDNSCache(5 * time.Minute)
+	// Set DNS cache defaults if not specified
+	if cfg.DNSTTL == 0 {
+		cfg.DNSTTL = 5 * time.Minute
+	}
+	if cfg.DNSMaxEntries == 0 {
+		cfg.DNSMaxEntries = 100
+	}
+	e.dnsCache = newDNSCache(cfg.DNSTTL, cfg.DNSMaxEntries)
 	e.dnsCache.enabled = cfg.EnableDNSCache
 	// If custom DNS servers configured, set custom resolver
 	if len(cfg.CustomDNSServers) > 0 {

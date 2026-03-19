@@ -119,9 +119,11 @@ pac:
   dns_timeout: 500ms
   eval_timeout: 200ms
   enable_dns_cache: false
-  # cache_enabled: false
-  # cache_max_size: 10000
-  # cache_ttl: 10m
+  dns_max_entries: 100
+  dns_ttl: 5m
+  cache_enabled: false
+  cache_max_size: 10000
+  cache_ttl: 10m
 
 gfw:
   source_url: "https://raw.githubusercontent.com/gfwlist/gfwlist/master/gfwlist.txt"

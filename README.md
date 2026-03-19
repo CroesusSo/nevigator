@@ -37,6 +37,8 @@ pac:
   dns_timeout: 500ms
   eval_timeout: 200ms
    enable_dns_cache: true
+   dns_max_entries: 100    # max DNS cache entries (0 = unlimited)
+   dns_ttl: 5m             # TTL for DNS cache entries
    cache_enabled: true
    cache_max_size: 10000
    cache_ttl: 10m

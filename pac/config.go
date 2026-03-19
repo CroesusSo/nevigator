@@ -65,6 +65,8 @@ type EvaluatorConfig struct {
 	DNSTimeout       time.Duration // Timeout for dnsResolve/isResolvable
 	EvalTimeout      time.Duration // Max time for Evaluate()
 	EnableDNSCache   bool          // Enable in-memory DNS cache
+	DNSMaxEntries    int           `yaml:"dns_max_entries" json:"dns_max_entries"`       // Max DNS cache entries (0 = unlimited)
+	DNSTTL           time.Duration `yaml:"dns_ttl" json:"dns_ttl"`                       // TTL for DNS cache entries
 	CustomDNSServers []string      `yaml:"custom_dns_servers" json:"custom_dns_servers"` // Optional custom DNS servers
 	FallbackRoute    Route         // Used when PAC fails
 
