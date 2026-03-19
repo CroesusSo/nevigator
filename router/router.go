@@ -146,22 +146,6 @@ func (r *Router) dialWithRoute(dest string, route pac.Route) (net.Conn, error) {
 		return r.dialSOCKS5WithAuth(dest, proxy.Address, dialer, auth)
 	case "DIRECT":
 		return dialer.Dial("tcp", dest)
-	case "TLS_TUN":
-		if r.tunIP == nil {
-			return nil, ErrTUNNotConfigured
-		}
-		dialer.LocalAddr = &net.TCPAddr{
-			IP:   r.tunIP,
-			Port: 0,
-		}
-		return dialer.Dial("tcp", dest)
-	case "TLS_SOCKS5":
-		if route.Address == "" {
-			return nil, ErrInvalidSOCKS5Address
-		}
-		return r.dialSOCKS5WithAuth(dest, route.Address, dialer, nil)
-	case "TLS_DIRECT":
-		return dialer.Dial("tcp", dest)
 	default:
 		return nil, ErrUnknownStrategy
 	}

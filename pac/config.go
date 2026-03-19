@@ -53,8 +53,8 @@ type ExternalProxy struct {
 
 // Route represents a routing decision from PAC evaluation.
 type Route struct {
-	Strategy   string // "TUN", "SOCKS5", "DIRECT", "EXTERNAL", "DEFAULT", "TLS_TUN", "TLS_SOCKS5", "TLS_DIRECT"
-	Address    string // required for SOCKS5 and TLS_SOCKS5, ignored otherwise
+	Strategy   string // "TUN", "SOCKS5", "DIRECT", "EXTERNAL", "DEFAULT"
+	Address    string // required for SOCKS5, ignored otherwise
 	ExternalID string // used when Strategy == "EXTERNAL"
 }
 

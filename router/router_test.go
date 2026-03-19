@@ -1,10 +1,8 @@
 package router
 
 import (
-	"net"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/yourorg/proxy-pac/pac"
 )
@@ -76,39 +74,5 @@ func TestRouter_DefaultRoute_DefaultNotFound(t *testing.T) {
 	_, err := r.dialWithRoute("8.8.8.8:53", route)
 	if err == nil || !strings.Contains(err.Error(), "default external proxy not found") {
 		t.Errorf("expected error about default proxy not found, got %v", err)
-	}
-}
-
-// TestRouter_TLSRoute_TUNNotConfigured tests that TLS_TUN fails when TUN is not configured
-func TestRouter_TLSRoute_TUNNotConfigured(t *testing.T) {
-	r := &Router{
-		tunIP:       nil,
-		dialTimeout: 30 * time.Second,
-	}
-
-	route := pac.Route{Strategy: "TLS_TUN"}
-	_, err := r.dialWithRoute("example.com:443", route)
-	if err == nil {
-		t.Error("Expected error for TUN not configured")
-	}
-	if err != ErrTUNNotConfigured {
-		t.Errorf("Expected ErrTUNNotConfigured, got %v", err)
-	}
-}
-
-// TestRouter_TLSRoute_SOCKS5AddressRequired tests that TLS_SOCKS5 fails when address is missing
-func TestRouter_TLSRoute_SOCKS5AddressRequired(t *testing.T) {
-	r := &Router{
-		tunIP:       net.ParseIP("10.0.0.1"),
-		dialTimeout: 30 * time.Second,
-	}
-
-	route := pac.Route{Strategy: "TLS_SOCKS5"}
-	_, err := r.dialWithRoute("example.com:443", route)
-	if err == nil {
-		t.Error("Expected error for SOCKS5 address required")
-	}
-	if err != ErrInvalidSOCKS5Address {
-		t.Errorf("Expected ErrInvalidSOCKS5Address, got %v", err)
 	}
 }

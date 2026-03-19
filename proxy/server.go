@@ -57,7 +57,13 @@ func NewServer(cfg pac.ProxyConfig, evaluator *pac.Evaluator, router *router.Rou
 	// Top-level handler: intercept CONNECT, otherwise delegate to mux (admin/API)
 	topHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodConnect {
-			s.handleHTTPConnect(w, r)
+			host, portStr, err := net.SplitHostPort(r.Host)
+			if err != nil {
+				http.Error(w, "Invalid CONNECT path", http.StatusBadRequest)
+				return
+			}
+			port, _ := strconv.Atoi(portStr)
+			s.handleCONNECT(w, r, host, port)
 			return
 		}
 		mux.ServeHTTP(w, r)
@@ -321,37 +327,21 @@ func (s *Server) Connections() []status.Connection {
 	return result
 }
 
-// handleHTTPConnect handles HTTP CONNECT tunneling requests.
-func (s *Server) handleHTTPConnect(w http.ResponseWriter, r *http.Request) {
-	if r.Method != "CONNECT" {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	host, portStr, err := net.SplitHostPort(r.Host)
-	if err != nil {
-		http.Error(w, "Invalid CONNECT path", http.StatusBadRequest)
-		return
-	}
-	port, _ := strconv.Atoi(portStr)
+// handleCONNECT handles CONNECT tunneling requests for both HTTP and HTTPS proxies.
+func (s *Server) handleCONNECT(w http.ResponseWriter, r *http.Request, host string, port int) {
 	dest := formatDest(host, port)
 
 	// Evaluate route for the destination
 	route := s.evaluator.Evaluate(host)
 
-	// Check if this is an HTTPS request (port 443) and if TLS routing is configured
-	if port == 443 && s.tlsConfig != nil {
-		// Handle HTTPS CONNECT with TLS
-		s.handleHTTPSConnect(w, r, host, port, dest, route)
-		return
-	}
-
-	// Handle regular HTTP CONNECT
+	// Establish outbound connection based on route
 	outbound, err := s.router.Route(dest, route)
 	if err != nil {
 		log.Printf("Route failed for %s: %v", dest, err)
 		http.Error(w, "Service unavailable", http.StatusBadGateway)
 		return
 	}
+
 	hj, ok := w.(http.Hijacker)
 	if !ok {
 		http.Error(w, "Hijacking not supported", http.StatusInternalServerError)
@@ -363,9 +353,25 @@ func (s *Server) handleHTTPConnect(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Hijack failed", http.StatusInternalServerError)
 		return
 	}
-	clientConn.Write([]byte("HTTP/1.1 200 Connection Established\r\n\r\n"))
 
-	connID := s.trackConnection(clientConn.RemoteAddr().String(), dest, route.Strategy, "http")
+	// Determine protocol based on whether client connection is TLS
+	protocol := "http"
+	if _, isTLS := clientConn.(*tls.Conn); isTLS {
+		protocol = "https"
+	}
+
+	// Send success response
+	_, err = clientConn.Write([]byte("HTTP/1.1 200 Connection Established\r\n\r\n"))
+	if err != nil {
+		log.Printf("Failed to write CONNECT success response: %v", err)
+		clientConn.Close()
+		return
+	}
+
+	// Track the connection
+	connID := s.trackConnection(clientConn.RemoteAddr().String(), dest, route.Strategy, protocol)
+
+	// Relay data between client and server
 	go s.relay(connID, clientConn, outbound)
 }
 
