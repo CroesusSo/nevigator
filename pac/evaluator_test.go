@@ -6,22 +6,23 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/yourorg/proxy-pac/gfw"
 )
 
 func TestEvaluator(t *testing.T) {
-	content := `function FindProxyForURL(url, host) { return "TUN"; }`
-	tmp, err := os.CreateTemp(t.TempDir(), "pac*.js")
-	if err != nil {
+	// Create a simple PAC that routes example.com to TUN
+	rules := []gfw.Rule{
+		{ID: "test", Source: "test", Enabled: true, Match: "exact", Value: "example.com", Action: "PROXY", Route: "TUN"},
+	}
+	pac := gfw.GeneratePAC(rules, nil, gfw.FWMeta{})
+	tmp := t.TempDir() + "/test.pac"
+	if err := os.WriteFile(tmp, []byte(pac), 0644); err != nil {
 		t.Fatal(err)
 	}
-	defer os.Remove(tmp.Name())
-	if _, err := tmp.WriteString(content); err != nil {
-		t.Fatal(err)
-	}
-	tmp.Close()
 
 	cfg := EvaluatorConfig{
-		PACPath:        tmp.Name(),
+		PACPath:        tmp,
 		LocalIP:        "10.0.0.2",
 		DNSTimeout:     100 * time.Millisecond,
 		EvalTimeout:    100 * time.Millisecond,
@@ -41,70 +42,28 @@ func TestEvaluator(t *testing.T) {
 }
 
 func TestEvaluatorSyntaxError(t *testing.T) {
-	content := `function FindProxyForURL { return "TUN"; }` // missing parentheses
-	tmp, err := os.CreateTemp(t.TempDir(), "pac*.js")
-	if err != nil {
+	// Invalid JSON in __PAC_RULES__
+	pac := `var __PAC_RULES__ = {invalid json}; function FindProxyForURL(url, host) { return "TUN"; }`
+	tmp := t.TempDir() + "/invalid.pac"
+	if err := os.WriteFile(tmp, []byte(pac), 0644); err != nil {
 		t.Fatal(err)
 	}
-	defer os.Remove(tmp.Name())
-	if _, err := tmp.WriteString(content); err != nil {
-		t.Fatal(err)
-	}
-	tmp.Close()
-
 	cfg := EvaluatorConfig{
-		PACPath:        tmp.Name(),
+		PACPath:        tmp,
 		LocalIP:        "10.0.0.2",
 		DNSTimeout:     100 * time.Millisecond,
 		EvalTimeout:    100 * time.Millisecond,
 		EnableDNSCache: false,
 		FallbackRoute:  Route{Strategy: "DIRECT"},
 	}
-	ev, err := NewEvaluator(cfg)
-	_ = err // syntax error at startup causes NewEvaluator to return error
-	// If ev is nil, skip further checks
-	if ev == nil {
-		t.Skip("Evaluator failed to create due to syntax error, which is expected")
-	}
-	defer ev.Close()
-
-	route := ev.Evaluate("example.com")
-	if route.Strategy != "DIRECT" {
-		t.Errorf("Expected fallback DIRECT, got %v", route)
+	_, err := NewEvaluator(cfg)
+	if err == nil {
+		t.Fatal("Expected error for invalid __PAC_RULES__")
 	}
 }
 
 func TestEvaluatorTimeout(t *testing.T) {
-	// PAC that loops forever
-	content := `function FindProxyForURL(url, host) { while (true) {} return "TUN"; }`
-	tmp, err := os.CreateTemp(t.TempDir(), "pac*.js")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer os.Remove(tmp.Name())
-	if _, err := tmp.WriteString(content); err != nil {
-		t.Fatal(err)
-	}
-	tmp.Close()
-
-	cfg := EvaluatorConfig{
-		PACPath:        tmp.Name(),
-		LocalIP:        "10.0.0.2",
-		DNSTimeout:     100 * time.Millisecond,
-		EvalTimeout:    100 * time.Millisecond,
-		EnableDNSCache: false,
-		FallbackRoute:  Route{Strategy: "DIRECT"},
-	}
-	ev, err := NewEvaluator(cfg)
-	if err != nil {
-		t.Fatalf("NewEvaluator: %v", err)
-	}
-	defer ev.Close()
-
-	route := ev.Evaluate("example.com")
-	if route.Strategy != "DIRECT" {
-		t.Errorf("Expected fallback DIRECT after timeout, got %v", route)
-	}
+	t.Skip("native engine does not have infinite loop issue")
 }
 
 func TestEvaluatorCreatesDefaultPAC(t *testing.T) {
@@ -123,15 +82,21 @@ func TestEvaluatorCreatesDefaultPAC(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewEvaluator should succeed by creating default PAC: %v", err)
 	}
-	defer ev.Close()
+	ev.Close()
 
-	// File should now exist
 	content, err := os.ReadFile(pacPath)
 	if err != nil {
 		t.Fatalf("Default PAC file should exist: %v", err)
 	}
-	if !strings.Contains(string(content), "FindProxyForURL") {
-		t.Errorf("Default PAC should contain FindProxyForURL, got: %s", content)
+	s := string(content)
+	if !strings.Contains(s, "FindProxyForURL") {
+		t.Errorf("Default PAC should contain FindProxyForURL, got: %s", s)
+	}
+	if !strings.Contains(s, "__PAC_RULES__") {
+		t.Errorf("Default PAC should contain __PAC_RULES__, got: %s", s)
+	}
+	if !strings.Contains(s, `{"version":1,"rules":[]}`) {
+		t.Errorf("Default PAC should have empty rules, got: %s", s)
 	}
 }
 
@@ -139,8 +104,12 @@ func TestEvaluatorDoesNotOverwriteExistingPAC(t *testing.T) {
 	dir := t.TempDir()
 	pacPath := filepath.Join(dir, "existing.pac")
 
-	customPAC := `function FindProxyForURL(url, host) { return "SOCKS5 127.0.0.1:9050"; }`
-	if err := os.WriteFile(pacPath, []byte(customPAC), 0644); err != nil {
+	// Create a valid native PAC with some rules
+	rules := []gfw.Rule{
+		{ID: "usr-1", Source: "user", Enabled: true, Match: "exact", Value: "example.com", Route: "SOCKS5 127.0.0.1:9050"},
+	}
+	pac := gfw.GeneratePAC(rules, nil, gfw.FWMeta{})
+	if err := os.WriteFile(pacPath, []byte(pac), 0644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -156,24 +125,34 @@ func TestEvaluatorDoesNotOverwriteExistingPAC(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewEvaluator: %v", err)
 	}
-	defer ev.Close()
+	ev.Close()
 
 	// File should be unchanged — not overwritten with default PAC
 	content, err := os.ReadFile(pacPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(content), defaultPACContent) {
+	s := string(content)
+	if strings.Contains(s, defaultPACContent) {
 		t.Errorf("Existing PAC was overwritten with default PAC")
 	}
-	if !strings.Contains(string(content), "SOCKS5 127.0.0.1:9050") {
-		t.Errorf("Existing PAC content was changed: %s", content)
+	if !strings.Contains(s, "SOCKS5 127.0.0.1:9050") {
+		t.Errorf("Existing PAC content was changed: %s", s)
 	}
 }
 
-func TestDefaultPAC_RoutesGoogleToTUN(t *testing.T) {
+func TestCustomPAC_RoutesGoogleToTUN(t *testing.T) {
 	dir := t.TempDir()
-	pacPath := filepath.Join(dir, "auto.pac")
+	pacPath := filepath.Join(dir, "custom.pac")
+
+	// Create a PAC with a rule for google.com to TUN
+	rules := []gfw.Rule{
+		{ID: "1", Source: "user", Enabled: true, Match: "domain_suffix", Value: ".google.com", Route: "TUN"},
+	}
+	pac := gfw.GeneratePAC(rules, nil, gfw.FWMeta{})
+	if err := os.WriteFile(pacPath, []byte(pac), 0644); err != nil {
+		t.Fatal(err)
+	}
 
 	cfg := EvaluatorConfig{
 		PACPath:        pacPath,
@@ -193,7 +172,7 @@ func TestDefaultPAC_RoutesGoogleToTUN(t *testing.T) {
 	for _, host := range hosts {
 		route := ev.Evaluate(host)
 		if route.Strategy != "TUN" {
-			t.Errorf("Default PAC should return TUN for %s, got %v", host, route)
+			t.Errorf("Custom PAC should return TUN for %s, got %v", host, route)
 		}
 	}
 }

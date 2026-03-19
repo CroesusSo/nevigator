@@ -7,7 +7,7 @@ import (
 )
 
 // RegeneratePAC reads user and GFW rules, generates PAC, and writes it atomically.
-func RegeneratePAC(userPath, gfwPath, pacPath string, defaultExternalProxy string) error {
+func RegeneratePAC(userPath, gfwPath, pacPath string, defaultExternalProxy string, enableURLGlob bool) error {
 	userRules, err := LoadRules(userPath)
 	if err != nil {
 		log.Printf("[PAC] Failed to load user rules: %v", err)
@@ -23,6 +23,7 @@ func RegeneratePAC(userPath, gfwPath, pacPath string, defaultExternalProxy strin
 		Source:               "gfwlist",
 		RuleCount:            len(gfwRules),
 		DefaultExternalProxy: defaultExternalProxy,
+		EnableURLGlob:        enableURLGlob,
 	}
 	content := GeneratePAC(userRules, gfwRules, meta)
 

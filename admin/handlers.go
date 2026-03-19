@@ -10,12 +10,10 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 
-	"github.com/dop251/goja"
 	"gopkg.in/yaml.v3"
 
 	"github.com/yourorg/proxy-pac/gfw"
@@ -90,6 +88,7 @@ type FullConfig struct {
 		DNSTimeout     time.Duration `yaml:"dns_timeout" json:"dns_timeout"`
 		EvalTimeout    time.Duration `yaml:"eval_timeout" json:"eval_timeout"`
 		EnableDNSCache bool          `yaml:"enable_dns_cache" json:"enable_dns_cache"`
+		EnableURLGlob  bool          `yaml:"enable_url_glob" json:"enable_url_glob"`
 		DNSMaxEntries  int           `yaml:"dns_max_entries" json:"dns_max_entries"`
 		DNSTTL         time.Duration `yaml:"dns_ttl" json:"dns_ttl"`
 		CacheEnabled   bool          `yaml:"cache_enabled" json:"cache_enabled"`
@@ -310,9 +309,10 @@ func (h *Handler) handleUI(w http.ResponseWriter, r *http.Request) {
              <option value="TUN">TUN</option>
              <option value="SOCKS5 127.0.0.1:1080">SOCKS5 (default)</option>
            </select>
-           <button class="btn btn-primary" onclick="addRule()">Add</button>
-         </div>
-       </div>
+          <button class="btn btn-primary" onclick="addRule()">Add</button>
+          </div>
+          <div id="url-glob-warning" class="error" style="display:none;margin:0.5rem 0 0 1rem;">URL-glob rules are disabled in Settings; they will be filtered out and will not take effect.</div>
+        </div>
        <p class="hint">Rules are evaluated top-to-bottom. User rules always take precedence over GFW rules.</p>
        <h3>User Rules</h3>
        <table>
@@ -503,6 +503,17 @@ func (h *Handler) handleUI(w http.ResponseWriter, r *http.Request) {
             <label>TUN device</label>
             <input id="tun-device" value="tun0">
           </div>
+        </div>
+
+        <div class="card">
+          <h3>PAC Settings</h3>
+          <div class="form-row">
+            <label>
+              <input type="checkbox" id="enable-url-glob">
+              Enable URL-glob rules
+            </label>
+          </div>
+          <p class="hint">When enabled, rules using URL pattern matching (url_glob) are included in the generated PAC. Note: URL-glob is ineffective in CONNECT mode because the full URL is not available.</p>
         </div>
 
         <div class="card">
@@ -795,12 +806,17 @@ let gfwRules = [];
       function escHtml(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
 
       async function addRule() {
-       const rule = {
-         match: document.getElementById('new-match').value,
-         value: document.getElementById('new-value').value,
-         route: document.getElementById('new-route').value
-       };
-       if (!rule.value) return;
+        const rule = {
+          match: document.getElementById('new-match').value,
+          value: document.getElementById('new-value').value,
+          route: document.getElementById('new-route').value
+        };
+        // Disallow url_glob if disabled
+        if (rule.match === 'url_glob' && window.configEnableURLGlob === false) {
+          alert('URL-glob rules are disabled in Settings. Enable them to add such rules.');
+          return;
+        }
+        if (!rule.value) return;
        try {
          const res = await fetch('/api/rules', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(rule) });
          if (res.ok) {
@@ -1152,6 +1168,11 @@ let gfwRules = [];
             if (document.getElementById('tls-key')) document.getElementById('tls-key').value = cfg.tls?.key_file || '';
             if (document.getElementById('tls-ca')) document.getElementById('tls-ca').value = cfg.tls?.ca_file || '';
             if (document.getElementById('tls-client-auth')) document.getElementById('tls-client-auth').value = cfg.tls?.client_auth || '';
+            // Enable URL-glob checkbox
+            if (document.getElementById('enable-url-glob')) {
+                document.getElementById('enable-url-glob').checked = cfg.enable_url_glob || false;
+            }
+            window.configEnableURLGlob = !!cfg.enable_url_glob;
           }).catch(err => {
             console.error('Failed to load config:', err);
           });
@@ -1278,7 +1299,14 @@ let gfwRules = [];
      }, 2000);
      
      // Initialize GFW checkbox on page load
-     document.addEventListener('DOMContentLoaded', initGFWCheckbox);
+      document.addEventListener('DOMContentLoaded', initGFWCheckbox);
+      // Show/hide URL-glob warning based on settings
+      document.getElementById('new-match').addEventListener('change', function() {
+        var warning = document.getElementById('url-glob-warning');
+        if (warning) {
+          warning.style.display = (this.value === 'url_glob' && window.configEnableURLGlob === false) ? 'block' : 'none';
+        }
+      });
    </script>
 </body>
 </html>`
@@ -1323,10 +1351,31 @@ func (h *Handler) handleSavePAC(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Validate by compiling in a fresh goja VM
-	_, err = goja.Compile("pac.js", content, false)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusUnprocessableEntity)
+	// Validate that PAC contains __PAC_RULES__ with valid JSON
+	startMarker := "var __PAC_RULES__ = "
+	start := strings.Index(content, startMarker)
+	if start < 0 {
+		http.Error(w, "PAC must contain __PAC_RULES__ structured rules", http.StatusUnprocessableEntity)
+		return
+	}
+	start += len(startMarker)
+	end := strings.Index(content[start:], ";")
+	if end < 0 {
+		http.Error(w, "__PAC_RULES__ not properly terminated", http.StatusUnprocessableEntity)
+		return
+	}
+	end += start
+	jsonStr := content[start:end]
+	var rf struct {
+		Version int           `json:"version"`
+		Rules   []interface{} `json:"rules"`
+	}
+	if err := json.Unmarshal([]byte(jsonStr), &rf); err != nil {
+		http.Error(w, fmt.Sprintf("Invalid __PAC_RULES__ JSON: %v", err), http.StatusUnprocessableEntity)
+		return
+	}
+	if rf.Version != 1 {
+		http.Error(w, fmt.Sprintf("Unsupported __PAC_RULES__ version: %d", rf.Version), http.StatusUnprocessableEntity)
 		return
 	}
 
@@ -1343,9 +1392,6 @@ func (h *Handler) handleSavePAC(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Failed to write file", http.StatusInternalServerError)
 		return
 	}
-
-	// Ensure tmp file cleanup on any parent dir case
-	_ = filepath.Dir(h.pacPath)
 
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte("OK"))
@@ -1813,7 +1859,18 @@ func (h *Handler) regeneratePAC() {
 	if h.userPath == "" || h.gfwPath == "" || h.pacPath == "" {
 		return
 	}
-	if err := gfw.RegeneratePAC(h.userPath, h.gfwPath, h.pacPath, h.defaultExternalProxy); err != nil {
+	// Read config to get EnableURLGlob
+	enableURLGlob := false
+	if h.configPath != "" {
+		data, err := os.ReadFile(h.configPath)
+		if err == nil {
+			var cfg FullConfig
+			if err := yaml.Unmarshal(data, &cfg); err == nil {
+				enableURLGlob = cfg.PAC.EnableURLGlob
+			}
+		}
+	}
+	if err := gfw.RegeneratePAC(h.userPath, h.gfwPath, h.pacPath, h.defaultExternalProxy, enableURLGlob); err != nil {
 		log.Printf("[Admin] PAC regeneration failed: %v", err)
 	}
 }
@@ -2143,6 +2200,7 @@ func (h *Handler) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 		PACPath              string `json:"pac_path"`
 		TUNDevice            string `json:"tun_device"`
 		DefaultExternalProxy string `json:"default_external_proxy"`
+		EnableURLGlob        bool   `json:"enable_url_glob"`
 		TLS                  struct {
 			CertificateFile string `json:"certificate_file"`
 			KeyFile         string `json:"key_file"`
@@ -2155,7 +2213,7 @@ func (h *Handler) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 		AdminListen:  status.AdminListen,
 		HTTPSListen:  status.HTTPSListen, // Use status if available, else from config
 	}
-	// Read config file to get PACPath, TUNDevice, DefaultExternalProxy, HTTPSListen, TLS
+	// Read config file to get PACPath, TUNDevice, DefaultExternalProxy, HTTPSListen, TLS, EnableURLGlob
 	data, err := os.ReadFile(h.configPath)
 	if err == nil {
 		var full FullConfig
@@ -2164,6 +2222,7 @@ func (h *Handler) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 			cfg.TUNDevice = full.Proxy.TUNDevice
 			cfg.DefaultExternalProxy = full.Proxy.DefaultExternalProxy
 			cfg.HTTPSListen = full.Proxy.HTTPSListen
+			cfg.EnableURLGlob = full.PAC.EnableURLGlob
 			cfg.TLS.CertificateFile = full.Proxy.TLS.CertificateFile
 			cfg.TLS.KeyFile = full.Proxy.TLS.KeyFile
 			cfg.TLS.CAFile = full.Proxy.TLS.CAFile
@@ -2184,6 +2243,7 @@ func (h *Handler) handlePutConfig(w http.ResponseWriter, r *http.Request) {
 		PACPath              string `json:"pac_path"`
 		TUNDevice            string `json:"tun_device"`
 		DefaultExternalProxy string `json:"default_external_proxy"`
+		EnableURLGlob        bool   `json:"enable_url_glob"`
 		TLS                  struct {
 			CertificateFile string `json:"certificate_file"`
 			KeyFile         string `json:"key_file"`
@@ -2209,6 +2269,7 @@ func (h *Handler) handlePutConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	restartRequired := false
+	needRegen := false
 	if upd.HTTPListen != "" {
 		cfg.Proxy.HTTPListen = upd.HTTPListen
 		restartRequired = true
@@ -2235,7 +2296,7 @@ func (h *Handler) handlePutConfig(w http.ResponseWriter, r *http.Request) {
 		cfg.Proxy.DefaultExternalProxy = upd.DefaultExternalProxy
 		h.router.SetDefaultProxyID(upd.DefaultExternalProxy)
 		h.defaultExternalProxy = upd.DefaultExternalProxy
-		h.regeneratePAC()
+		needRegen = true
 	}
 	// TLS updates (only if provided)
 	if upd.TLS.CertificateFile != "" {
@@ -2254,11 +2315,20 @@ func (h *Handler) handlePutConfig(w http.ResponseWriter, r *http.Request) {
 		cfg.Proxy.TLS.ClientAuth = upd.TLS.ClientAuth
 		restartRequired = true
 	}
+	// Handle EnableURLGlob change
+	if upd.EnableURLGlob != cfg.PAC.EnableURLGlob {
+		cfg.PAC.EnableURLGlob = upd.EnableURLGlob
+		needRegen = true
+	}
+
 	// Write updated config
 	if err := h.writeFullConfig(cfg); err != nil {
 		log.Printf("[Admin] Failed to write config: %v", err)
 		http.Error(w, "Failed to save config", http.StatusInternalServerError)
 		return
+	}
+	if needRegen {
+		h.regeneratePAC()
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{

@@ -66,9 +66,10 @@ type EvaluatorConfig struct {
 	EvalTimeout      time.Duration // Max time for Evaluate()
 	EnableDNSCache   bool          // Enable in-memory DNS cache
 	DNSMaxEntries    int           `yaml:"dns_max_entries" json:"dns_max_entries"`       // Max DNS cache entries (0 = unlimited)
-	DNSTTL           time.Duration `yaml:"dns_ttl" json:"dns_ttl"`                       // TTL for DNS cache entries
+	DNSTTL           time.Duration `yaml:"dns_ttl" json:"dnsttl"`                        // TTL for DNS cache entries
 	CustomDNSServers []string      `yaml:"custom_dns_servers" json:"custom_dns_servers"` // Optional custom DNS servers
 	FallbackRoute    Route         // Used when PAC fails
+	EnableURLGlob    bool          `yaml:"enable_url_glob" json:"enable_url_glob"` // Enable URL-glob rule generation
 
 	// Cache configuration for native rule engine
 	CacheEnabled bool          `yaml:"cache_enabled" json:"cache_enabled"`

@@ -5,7 +5,7 @@ A high-performance proxy server that uses PAC (Proxy Auto-Config) scripts to rou
 ## Features
 
 - HTTP CONNECT and SOCKS5 proxy support
-- PAC script evaluation via goja JavaScript runtime
+- Native PAC rule engine (no JavaScript) for high-performance evaluation
 - Route strategies: TUN (bind to TUN interface IP), SOCKS5 upstream, DIRECT (system default)
 - Automatic fallback to DIRECT if chosen route fails
 - Hot-reload PAC file via file watcher or admin API
@@ -34,14 +34,15 @@ proxy:
 
 pac:
   local_ip: ""            # auto from tun0
+  enable_url_glob: false   # set to true to preserve URL-glob rules (not recommended; native engine does not support URL-glob)
   dns_timeout: 500ms
   eval_timeout: 200ms
    enable_dns_cache: true
-   dns_max_entries: 100    # max DNS cache entries (0 = unlimited)
-   dns_ttl: 5m             # TTL for DNS cache entries
-   cache_enabled: true
-   cache_max_size: 10000
-   cache_ttl: 10m
+    dns_max_entries: 100    # max DNS cache entries (0 = unlimited)
+    dns_ttl: 5m             # TTL for DNS cache entries
+    cache_enabled: true
+    cache_max_size: 10000
+    cache_ttl: 10m
 ```
 
 Run:
@@ -52,13 +53,16 @@ Run:
 
 ## Native Rule Engine
 
-For generated PAC files (containing `__PAC_RULES__`), the proxy uses a native Go rule engine instead of the JavaScript interpreter. This provides **>100× performance improvement** for uncached evaluation (sub‑microsecond vs millisecond). The engine builds efficient indexes:
+The proxy uses a native Go rule engine for PAC evaluation. This provides **>100× performance improvement** compared to a JavaScript interpreter, with uncached evaluation in sub‑microseconds. The engine only processes PAC files that contain structured rules in the `__PAC_RULES__` JSON variable.
 
+The engine builds efficient indexes:
 - Exact host map (O(1))
 - Reversed‑label domain suffix trie (O(depth))
 - Deduplicated, ordered host glob patterns
 
 An LRU cache with configurable TTL stores recent host→route results, further reducing latency. Cache statistics are available via `/api/cache` and included in `/api/status`.
+
+**Note:** The native engine does **not** support JavaScript execution; raw `FindProxyForURL` scripts are not evaluated. Only the structured rule format is supported.
 
 ### URL‑Glob Limitation
 

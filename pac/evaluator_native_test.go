@@ -4,10 +4,13 @@ import (
 	"os"
 	"testing"
 	"time"
+
+	"github.com/yourorg/proxy-pac/gfw"
 )
 
 // TestEvaluatorNativeFallback tests that when __PAC_RULES__ is an invalid array (not an object), the evaluator falls back to JS.
 func TestEvaluatorNativeFallback(t *testing.T) {
+	t.Skip("native-only now; no JS fallback")
 	// Use an array (invalid schema) but JS is valid
 	pac := `var __PAC_RULES__ = []; function FindProxyForURL(url, host) { return "DIRECT"; }`
 	tmp := t.TempDir() + "/malformed.pac"
@@ -95,5 +98,36 @@ func TestEvaluatorCacheDefaults(t *testing.T) {
 	}
 	if e.cache.ttl != 10*time.Minute {
 		t.Errorf("expected default TTL 10m, got %v", e.cache.ttl)
+	}
+}
+// TestEvaluate_ExceptionOverridesBlacklist tests that GFW exception (DIRECT) takes precedence over blacklist (PROXY) for the same domain pattern.
+func TestEvaluate_ExceptionOverridesBlacklist(t *testing.T) {
+	// Create PAC with both an exception and a blacklist for .example.com
+	gfwRules := []gfw.Rule{
+		{ID: "ex", Source: "gfw", Enabled: true, Action: "DIRECT", Match: gfw.MatchDomainSuffix, Value: ".example.com", Route: "DIRECT"},
+		{ID: "bl", Source: "gfw", Enabled: true, Action: "PROXY", Match: gfw.MatchDomainSuffix, Value: ".example.com", Route: "SOCKS5 1.2.3.4:1080"},
+	}
+	pac := gfw.GeneratePAC(nil, gfwRules, gfw.FWMeta{})
+	tmp := t.TempDir() + "/test.pac"
+	if err := os.WriteFile(tmp, []byte(pac), 0644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := EvaluatorConfig{
+		PACPath:       tmp,
+		LocalIP:       "127.0.0.1",
+		DNSTimeout:    100 * time.Millisecond,
+		EvalTimeout:   100 * time.Millisecond,
+		FallbackRoute: Route{Strategy: "DIRECT"},
+		CacheEnabled:  false,
+	}
+	ev, err := NewEvaluator(cfg)
+	if err != nil {
+		t.Fatalf("NewEvaluator: %v", err)
+	}
+	defer ev.Close()
+
+	route := ev.Evaluate("sub.example.com")
+	if route.Strategy != "DIRECT" {
+		t.Errorf("exception should override blacklist, got %v", route)
 	}
 }

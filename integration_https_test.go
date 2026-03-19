@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/yourorg/proxy-pac/gfw"
 	"github.com/yourorg/proxy-pac/pac"
 	"github.com/yourorg/proxy-pac/proxy"
 	"github.com/yourorg/proxy-pac/router"
@@ -69,7 +70,7 @@ func TestHTTPSProxy_ListenerStartup(t *testing.T) {
 	// Create a minimal PAC file
 	tmpDir := t.TempDir()
 	pacPath := filepath.Join(tmpDir, "test.pac")
-	pacContent := `function FindProxyForURL(url, host) { return "DIRECT"; }`
+	pacContent := gfw.GeneratePAC(nil, nil, gfw.FWMeta{})
 	if err := os.WriteFile(pacPath, []byte(pacContent), 0644); err != nil {
 		t.Fatal(err)
 	}
@@ -140,7 +141,9 @@ func TestHTTPSProxy_ListenerStartup(t *testing.T) {
 func TestHTTPSProxy_DisabledWhenNoTLS(t *testing.T) {
 	tmpDir := t.TempDir()
 	pacPath := filepath.Join(tmpDir, "test.pac")
-	if err := os.WriteFile(pacPath, []byte(`function FindProxyForURL(url, host) { return "DIRECT"; }`), 0644); err != nil {
+	// Use native PAC format (empty rules -> DIRECT)
+	pacContent := gfw.GeneratePAC(nil, nil, gfw.FWMeta{})
+	if err := os.WriteFile(pacPath, []byte(pacContent), 0644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -152,15 +155,25 @@ func TestHTTPSProxy_DisabledWhenNoTLS(t *testing.T) {
 	}
 
 	evalCfg := pac.EvaluatorConfig{
-		PACPath:       pacPath,
-		LocalIP:       "127.0.0.1",
-		FallbackRoute: pac.Route{Strategy: "DIRECT"},
+		PACPath:        pacPath,
+		LocalIP:        "127.0.0.1",
+		DNSTimeout:     50 * time.Millisecond,
+		EvalTimeout:    50 * time.Millisecond,
+		EnableDNSCache: false,
+		FallbackRoute:  pac.Route{Strategy: "DIRECT"},
 	}
-	evaluator, _ := pac.NewEvaluator(evalCfg)
+	// Allow for successful creation of evaluator; native PAC should be valid
+	evaluator, err0 := pac.NewEvaluator(evalCfg)
+	if err0 != nil {
+		t.Fatalf("NewEvaluator: %v", err0)
+	}
 	defer evaluator.Close()
 
 	routerCfg := pac.RouterConfig{TUNIP: nil}
-	r, _ := router.NewRouter(routerCfg)
+	r, err1 := router.NewRouter(routerCfg)
+	if err1 != nil {
+		t.Fatalf("NewRouter: %v", err1)
+	}
 
 	serv := proxy.NewServer(proxyCfg, evaluator, r)
 	if err := serv.Start(); err != nil {
@@ -212,7 +225,7 @@ func TestHTTPConnect_IPv6(t *testing.T) {
 	tmpDir := t.TempDir()
 	pacPath := filepath.Join(tmpDir, "test.pac")
 	// PAC that routes everything to DIRECT
-	pacContent := `function FindProxyForURL(url, host) { return "DIRECT"; }`
+	pacContent := gfw.GeneratePAC(nil, nil, gfw.FWMeta{})
 	if err := os.WriteFile(pacPath, []byte(pacContent), 0644); err != nil {
 		t.Fatal(err)
 	}
@@ -336,7 +349,7 @@ func TestSOCKS5Connect_IPv6_Direct(t *testing.T) {
 	// Create proxy server with SOCKS5
 	tmpDir := t.TempDir()
 	pacPath := filepath.Join(tmpDir, "test.pac")
-	pacContent := `function FindProxyForURL(url, host) { return "DIRECT"; }`
+	pacContent := gfw.GeneratePAC(nil, nil, gfw.FWMeta{})
 	if err := os.WriteFile(pacPath, []byte(pacContent), 0644); err != nil {
 		t.Fatal(err)
 	}
@@ -503,8 +516,16 @@ func TestSOCKS5Connect_IPv6_Upstream(t *testing.T) {
 	// Create main proxy server with PAC that routes through upstream SOCKS5
 	tmpDir := t.TempDir()
 	pacPath := filepath.Join(tmpDir, "test.pac")
-	// PAC returns SOCKS5 upstream
-	pacContent := `function FindProxyForURL(url, host) { return "SOCKS5 ` + upstreamAddr + `"; }`
+	// PAC returns SOCKS5 upstream - use native rule that matches all hosts
+	rule := gfw.Rule{
+		ID:      "upstream",
+		Source:  "test",
+		Enabled: true,
+		Match:   gfw.MatchHostGlob,
+		Value:   "*",
+		Route:   "SOCKS5 " + upstreamAddr,
+	}
+	pacContent := gfw.GeneratePAC([]gfw.Rule{rule}, nil, gfw.FWMeta{})
 	if err := os.WriteFile(pacPath, []byte(pacContent), 0644); err != nil {
 		t.Fatal(err)
 	}

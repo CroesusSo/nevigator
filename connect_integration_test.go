@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/yourorg/proxy-pac/gfw"
 	"github.com/yourorg/proxy-pac/pac"
 	"github.com/yourorg/proxy-pac/proxy"
 	"github.com/yourorg/proxy-pac/router"
@@ -31,7 +32,8 @@ func sendConnect(conn net.Conn, host string, port int) (int, string, error) {
 func TestConnectRouting(t *testing.T) {
 	tmpDir := t.TempDir()
 	pacPath := filepath.Join(tmpDir, "test.pac")
-	if err := os.WriteFile(pacPath, []byte(`function FindProxyForURL(url, host) { return "DIRECT"; }`), 0644); err != nil {
+	pacContent := gfw.GeneratePAC(nil, nil, gfw.FWMeta{})
+	if err := os.WriteFile(pacPath, []byte(pacContent), 0644); err != nil {
 		t.Fatal(err)
 	}
 

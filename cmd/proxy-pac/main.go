@@ -38,6 +38,9 @@ type Config struct {
 		DNSTimeout     time.Duration `yaml:"dns_timeout"`
 		EvalTimeout    time.Duration `yaml:"eval_timeout"`
 		EnableDNSCache bool          `yaml:"enable_dns_cache"`
+		EnableURLGlob  bool          `yaml:"enable_url_glob"`
+		DNSMaxEntries  int           `yaml:"dns_max_entries"`
+		DNSTTL         time.Duration `yaml:"dns_ttl"`
 		CacheEnabled   bool          `yaml:"cache_enabled"`
 		CacheMaxSize   int           `yaml:"cache_max_size"`
 		CacheTTL       time.Duration `yaml:"cache_ttl"`
@@ -80,6 +83,9 @@ func loadConfig(path string) (*Config, error) {
 	if cfg.PAC.EvalTimeout == 0 {
 		cfg.PAC.EvalTimeout = 200 * time.Millisecond
 	}
+	if !cfg.PAC.EnableURLGlob {
+		cfg.PAC.EnableURLGlob = false
+	}
 	return &cfg, nil
 }
 
@@ -119,6 +125,7 @@ pac:
   dns_timeout: 500ms
   eval_timeout: 200ms
   enable_dns_cache: false
+  enable_url_glob: false
   dns_max_entries: 100
   dns_ttl: 5m
   cache_enabled: false
@@ -345,7 +352,7 @@ func main() {
 					log.Printf("[GFW] Startup fetch failed: %v", result.Error)
 				} else if result.Updated {
 					log.Printf("[GFW] Startup fetch: %d rules loaded", result.RuleCount)
-					regeneratePAC(userPath, gfwPath, cfg.Proxy.PACPath, cfg.Proxy.DefaultExternalProxy)
+					regeneratePAC(userPath, gfwPath, cfg.Proxy.PACPath, cfg.Proxy.DefaultExternalProxy, cfg.PAC.EnableURLGlob)
 				}
 			}()
 		}
@@ -362,7 +369,7 @@ func main() {
 						log.Printf("[GFW] Periodic fetch failed: %v", result.Error)
 					} else if result.Updated {
 						log.Printf("[GFW] Periodic fetch: %d rules updated", result.RuleCount)
-						regeneratePAC(userPath, gfwPath, cfg.Proxy.PACPath, cfg.Proxy.DefaultExternalProxy)
+						regeneratePAC(userPath, gfwPath, cfg.Proxy.PACPath, cfg.Proxy.DefaultExternalProxy, cfg.PAC.EnableURLGlob)
 					}
 				}
 			}()
@@ -407,8 +414,8 @@ func errorsIs(err, target error) bool {
 }
 
 // regeneratePAC reads user and GFW rules, generates PAC, and writes it.
-func regeneratePAC(userPath, gfwPath, pacPath string, defaultExternalProxy string) {
-	if err := gfw.RegeneratePAC(userPath, gfwPath, pacPath, defaultExternalProxy); err != nil {
+func regeneratePAC(userPath, gfwPath, pacPath string, defaultExternalProxy string, enableURLGlob bool) {
+	if err := gfw.RegeneratePAC(userPath, gfwPath, pacPath, defaultExternalProxy, enableURLGlob); err != nil {
 		log.Printf("[PAC] Regeneration failed: %v", err)
 	}
 }

@@ -9,6 +9,7 @@ proxy:
 
 pac:
   local_ip: ""            # auto-discovered from tun0
+  enable_url_glob: false   # set true to preserve URL-glob rules (not recommended; native engine does not support URL-glob)
   dns_timeout: 500ms
   eval_timeout: 200ms
   enable_dns_cache: true

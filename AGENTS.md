@@ -66,7 +66,6 @@ import (
     "net"
     "time"
 
-    "github.com/dop251/goja"
     "github.com/fsnotify/fsnotify"
 
     "github.com/yourorg/proxy-pac/pac"
@@ -125,7 +124,7 @@ func NewEvaluator(cfg EvaluatorConfig) (*Evaluator, error) { ... }
 
 ## Architecture Notes
 
-- PAC evaluation creates a fresh JS VM per request (~100-200µs overhead)
+- PAC evaluation uses a native Go rule engine with sub‑microsecond latency; an LRU cache further reduces overhead
 - PAC file hot-reload via fsnotify watcher on parent directory
 - Route fallback: if chosen route fails (not DIRECT), automatically retries DIRECT
 - SOCKS5 handshake implemented manually in `router/router.go` and `proxy/server.go`

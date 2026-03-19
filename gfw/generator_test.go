@@ -76,7 +76,6 @@ func TestGeneratePACMatchTypes(t *testing.T) {
 	rules := []Rule{
 		{ID: "1", Source: "user", Enabled: true, Match: MatchDomainSuffix, Value: ".example.com", Route: "TUN"},
 		{ID: "2", Source: "user", Enabled: true, Match: MatchHostGlob, Value: "*.onion", Route: "SOCKS5 127.0.0.1:9050"},
-		{ID: "3", Source: "user", Enabled: true, Match: MatchURLGlob, Value: "http://blocked.net/*", Route: "DIRECT"},
 		{ID: "4", Source: "user", Enabled: true, Match: MatchExact, Value: "192.168.1.1", Route: "TUN"},
 	}
 
@@ -87,7 +86,6 @@ func TestGeneratePACMatchTypes(t *testing.T) {
 	}{
 		{`dnsDomainIs(host, ".example.com")`},
 		{`shExpMatch(host, "*.onion")`},
-		{`shExpMatch(url, "http://blocked.net/*")`},
 		{`host === "192.168.1.1"`},
 	}
 
@@ -167,7 +165,6 @@ func TestRuleToCondition(t *testing.T) {
 	}{
 		{Rule{Match: MatchDomainSuffix, Value: ".test.com"}, `dnsDomainIs(host, ".test.com") || host === "test.com"`},
 		{Rule{Match: MatchHostGlob, Value: "*.onion"}, `shExpMatch(host, "*.onion")`},
-		{Rule{Match: MatchURLGlob, Value: "http://x.com"}, `shExpMatch(url, "http://x.com")`},
 		{Rule{Match: MatchExact, Value: "1.2.3.4"}, `host === "1.2.3.4"`},
 		{Rule{Match: "unknown", Value: "x"}, ""},
 	}

@@ -5,37 +5,26 @@ import (
 	"log"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
-	"github.com/dop251/goja"
 	"github.com/fsnotify/fsnotify"
 )
 
 // defaultPACContent is the minimal PAC script used when no PAC file exists.
-const defaultPACContent = `function FindProxyForURL(url, host) {
-  if (dnsDomainIs(host, "google.com")) {
-    return "TUN";
-  }
-  return "DIRECT";
-}`
+// It MUST contain __PAC_RULES__ structured rules; JS evaluation is removed.
+const defaultPACContent = `var __PAC_RULES__ = {"version":1,"rules":[]};
+function FindProxyForURL(url, host) { return "DIRECT"; }`
 
-type compiledPAC struct {
-	prog    *goja.Program
-	modTime time.Time
-}
-
-// Evaluator implements the PAC evaluation logic.
 type Evaluator struct {
 	cfg         EvaluatorConfig
-	current     atomic.Value // *compiledPAC or *NativeRuleEngine
+	current     atomic.Value // *NativeRuleEngine
 	stopped     chan struct{}
 	closeOnce   sync.Once
 	dnsCache    *dnsCache
 	cache       *EvaluatorCache
-	engineType  string       // "js" or "native"
+	engineType  string       // "native"
 	lastModTime atomic.Int64 // last modified time in Unix nanoseconds
 }
 
@@ -161,87 +150,22 @@ func (e *Evaluator) reload() error {
 		return fmt.Errorf("read pac file: %v", err)
 	}
 
-	// Try native engine if PAC contains __PAC_RULES__
-	if strings.Contains(string(src), "__PAC_RULES__") {
-		engine, err := NewNativeRuleEngine(string(src), e.cfg.FallbackRoute)
-		if err != nil {
-			log.Printf("[WARN] Native engine build failed: %v; falling back to JS", err)
-		} else {
-			e.current.Store(engine)
-			e.engineType = "native"
-			e.lastModTime.Store(modTimeNano)
-			if e.cache != nil {
-				e.cache.InvalidateAll()
-			}
-			log.Println("PAC reloaded with native engine successfully")
-			return nil
-		}
-	}
-
-	// Fallback to JS compilation
-	vm := goja.New()
-	registerBuiltins(vm, e.cfg, e.dnsCache)
-	prog, err := goja.Compile(e.cfg.PACPath, string(src), false)
+	// Native engine only: PAC must contain __PAC_RULES__
+	engine, err := NewNativeRuleEngine(string(src), e.cfg.FallbackRoute)
 	if err != nil {
-		return fmt.Errorf("compile pac: %v", err)
+		log.Printf("[WARN] Native engine build failed: %v", err)
+		// No fallback to JS; keep current engine if possible
+		// Return error but don't replace engine; current stays as is
+		return fmt.Errorf("native engine build: %w", err)
 	}
-	// Execute to validate
-	if _, err := vm.RunProgram(prog); err != nil {
-		return fmt.Errorf("execute pac for validation: %v", err)
-	}
-	// Atomically swap
-	newPAC := &compiledPAC{prog: prog, modTime: modTime}
-	e.current.Store(newPAC)
-	e.engineType = "js"
+	e.current.Store(engine)
+	e.engineType = "native"
 	e.lastModTime.Store(modTimeNano)
-	// Invalidate cache on reload
 	if e.cache != nil {
 		e.cache.InvalidateAll()
 	}
-	log.Println("PAC reloaded with JS engine successfully")
+	log.Println("PAC reloaded with native engine successfully")
 	return nil
-}
-
-// evaluateJS executes the PAC script using goja for the given host.
-func (e *Evaluator) evaluateJS(pac *compiledPAC, host string) Route {
-	vm := goja.New()
-	registerBuiltins(vm, e.cfg, e.dnsCache)
-	// Run PAC to define FindProxyForURL
-	if _, err := vm.RunProgram(pac.prog); err != nil {
-		log.Printf("PAC runtime error: %v", err)
-		return e.cfg.FallbackRoute
-	}
-	fnVal := vm.Get("FindProxyForURL")
-	if fnVal == nil {
-		log.Printf("PAC missing FindProxyForURL")
-		return e.cfg.FallbackRoute
-	}
-	fn, ok := goja.AssertFunction(fnVal)
-	if !ok {
-		log.Printf("PAC FindProxyForURL is not a function")
-		return e.cfg.FallbackRoute
-	}
-	// Evaluate with timeout
-	type result struct{ route Route }
-	ch := make(chan result, 1)
-	go func() {
-		ret, err := fn(goja.Undefined(), vm.ToValue(""), vm.ToValue(host))
-		if err != nil {
-			log.Printf("PAC evaluation error: %v", err)
-			ch <- result{e.cfg.FallbackRoute}
-			return
-		}
-		ch <- result{parsePACResult(ret.String())}
-	}()
-	select {
-	case r := <-ch:
-		return r.route
-	case <-time.After(e.cfg.EvalTimeout):
-		vm.Interrupt(fmt.Errorf("evaluation timeout after %v", e.cfg.EvalTimeout))
-		<-ch // wait for goroutine to finish
-		log.Printf("PAC timeout for host %s", host)
-		return e.cfg.FallbackRoute
-	}
 }
 
 // Evaluate executes the PAC evaluation for the given host, using cache if enabled.
@@ -258,16 +182,13 @@ func (e *Evaluator) Evaluate(host string) Route {
 		return e.cfg.FallbackRoute
 	}
 
-	var r Route
-	switch v := val.(type) {
-	case *NativeRuleEngine:
-		r = v.Evaluate(host)
-	case *compiledPAC:
-		r = e.evaluateJS(v, host)
-	default:
-		log.Printf("[ERROR] Unknown engine type in Evaluator.current")
+	// Native engine only
+	engine, ok := val.(*NativeRuleEngine)
+	if !ok {
+		log.Printf("[ERROR] Expected NativeRuleEngine but got %T", val)
 		return e.cfg.FallbackRoute
 	}
+	r := engine.Evaluate(host)
 
 	// Cache the result
 	if e.cache != nil {

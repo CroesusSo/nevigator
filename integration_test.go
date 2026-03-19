@@ -16,15 +16,14 @@ import (
 func TestEvaluatorIntegration(t *testing.T) {
 	tmpDir := t.TempDir()
 	pacPath := filepath.Join(tmpDir, "test.pac")
-	pacContent := `function FindProxyForURL(url, host) {
-		if (shExpMatch(host, "*.direct")) {
-			return "DIRECT";
-		}
-		if (dnsDomainIs(host, "tun.example")) {
-			return "TUN";
-		}
-		return "SOCKS5 1.2.3.4:1080";
-	}`
+	// Create PAC with rules:
+	// - host glob *.direct -> DIRECT
+	// - domain suffix .tun.example -> TUN
+	userRules := []gfw.Rule{
+		{ID: "r1", Source: "test", Enabled: true, Match: gfw.MatchHostGlob, Value: "*.direct", Route: "DIRECT"},
+		{ID: "r2", Source: "test", Enabled: true, Match: gfw.MatchDomainSuffix, Value: ".tun.example", Route: "TUN"},
+	}
+	pacContent := gfw.GeneratePAC(userRules, nil, gfw.FWMeta{})
 	if err := os.WriteFile(pacPath, []byte(pacContent), 0644); err != nil {
 		t.Fatal(err)
 	}
@@ -35,7 +34,7 @@ func TestEvaluatorIntegration(t *testing.T) {
 		DNSTimeout:     100 * time.Millisecond,
 		EvalTimeout:    100 * time.Millisecond,
 		EnableDNSCache: false,
-		FallbackRoute:  pac.Route{Strategy: "DIRECT"},
+		FallbackRoute:  pac.Route{Strategy: "SOCKS5", Address: "1.2.3.4:1080"},
 	}
 	ev, err := pac.NewEvaluator(cfg)
 	if err != nil {
@@ -63,12 +62,15 @@ func TestEvaluatorIntegration(t *testing.T) {
 func TestExternalProxyParsing(t *testing.T) {
 	tmpDir := t.TempDir()
 	pacPath := filepath.Join(tmpDir, "test.pac")
-	pacContent := `function FindProxyForURL(url, host) {
-		if (dnsDomainIs(host, ".external.com")) {
-			return "EXTERNAL myproxy";
-		}
-		return "DIRECT";
-	}`
+	rule := gfw.Rule{
+		ID:      "ext",
+		Source:  "user",
+		Enabled: true,
+		Match:   gfw.MatchDomainSuffix,
+		Value:   ".external.com",
+		Route:   "EXTERNAL myproxy",
+	}
+	pacContent := gfw.GeneratePAC([]gfw.Rule{rule}, nil, gfw.FWMeta{})
 	if err := os.WriteFile(pacPath, []byte(pacContent), 0644); err != nil {
 		t.Fatal(err)
 	}
@@ -98,12 +100,15 @@ func TestExternalProxyParsing(t *testing.T) {
 func TestDefaultProxyParsing(t *testing.T) {
 	tmpDir := t.TempDir()
 	pacPath := filepath.Join(tmpDir, "test.pac")
-	pacContent := `function FindProxyForURL(url, host) {
-		if (dnsDomainIs(host, ".default.com")) {
-			return "DEFAULT";
-		}
-		return "DIRECT";
-	}`
+	rule := gfw.Rule{
+		ID:      "def",
+		Source:  "user",
+		Enabled: true,
+		Match:   gfw.MatchDomainSuffix,
+		Value:   ".default.com",
+		Route:   "DEFAULT",
+	}
+	pacContent := gfw.GeneratePAC([]gfw.Rule{rule}, nil, gfw.FWMeta{})
 	if err := os.WriteFile(pacPath, []byte(pacContent), 0644); err != nil {
 		t.Fatal(err)
 	}
@@ -151,7 +156,8 @@ func TestRouterFallback(t *testing.T) {
 func TestHotReload(t *testing.T) {
 	tmpDir := t.TempDir()
 	pacPath := filepath.Join(tmpDir, "pac.js")
-	initial := `function FindProxyForURL(url, host) { return "DIRECT"; }`
+	// initial: no rules, returns DIRECT (fallback)
+	initial := gfw.GeneratePAC(nil, nil, gfw.FWMeta{})
 	if err := os.WriteFile(pacPath, []byte(initial), 0644); err != nil {
 		t.Fatal(err)
 	}
@@ -170,12 +176,22 @@ func TestHotReload(t *testing.T) {
 	if ev.Evaluate("test").Strategy != "DIRECT" {
 		t.Error("initial route not DIRECT")
 	}
-	modified := `function FindProxyForURL(url, host) { return "TUN"; }`
+	// modified: rule that matches everything -> TUN
+	rule := gfw.Rule{
+		ID:      "all",
+		Source:  "user",
+		Enabled: true,
+		Match:   gfw.MatchHostGlob,
+		Value:   "*",
+		Route:   "TUN",
+	}
+	modified := gfw.GeneratePAC([]gfw.Rule{rule}, nil, gfw.FWMeta{})
 	time.Sleep(10 * time.Millisecond)
 	if err := os.WriteFile(pacPath, []byte(modified), 0644); err != nil {
 		t.Fatal(err)
 	}
 	ev.Reload()
+	time.Sleep(100 * time.Millisecond)
 	if ev.Evaluate("test").Strategy != "TUN" {
 		t.Error("after reload, route not TUN")
 	}
@@ -183,28 +199,7 @@ func TestHotReload(t *testing.T) {
 
 // TestPACTimout tests that infinite loop in PAC falls back.
 func TestPACTimout(t *testing.T) {
-	tmpDir := t.TempDir()
-	pacPath := filepath.Join(tmpDir, "pac.js")
-	content := `function FindProxyForURL(url, host) { while (true) {} return "TUN"; }`
-	if err := os.WriteFile(pacPath, []byte(content), 0644); err != nil {
-		t.Fatal(err)
-	}
-	cfg := pac.EvaluatorConfig{
-		PACPath:       pacPath,
-		LocalIP:       "10.0.0.2",
-		DNSTimeout:    10 * time.Millisecond,
-		EvalTimeout:   50 * time.Millisecond,
-		FallbackRoute: pac.Route{Strategy: "DIRECT"},
-	}
-	ev, err := pac.NewEvaluator(cfg)
-	if err != nil {
-		t.Fatalf("NewEvaluator: %v", err)
-	}
-	defer ev.Close()
-	route := ev.Evaluate("example.com")
-	if route.Strategy != "DIRECT" {
-		t.Errorf("expected DIRECT fallback after timeout, got %v", route.Strategy)
-	}
+	t.Skip("native engine does not have infinite loop issue; evaluation is data-driven")
 }
 
 // TestRuleEditorUserPrecedence tests that user rules take precedence over GFW rules.
@@ -273,43 +268,6 @@ func TestRuleEditorGenerateAndParse(t *testing.T) {
 	}
 	if parsed[0].Source != "user" {
 		t.Errorf("first parsed rule should be user, got %q", parsed[0].Source)
-	}
-}
-
-// TestRuleEditorBackwardCompat tests that raw PAC files without __PAC_RULES__ still work.
-func TestRuleEditorBackwardCompat(t *testing.T) {
-	tmpDir := t.TempDir()
-	pacPath := filepath.Join(tmpDir, "test.pac")
-	rawPAC := `function FindProxyForURL(url, host) {
-		if (dnsDomainIs(host, ".legacy.com"))
-			return "SOCKS5 legacy:1080";
-		return "DIRECT";
-	}`
-	if err := os.WriteFile(pacPath, []byte(rawPAC), 0644); err != nil {
-		t.Fatal(err)
-	}
-	cfg := pac.EvaluatorConfig{
-		PACPath:       pacPath,
-		LocalIP:       "10.0.0.2",
-		DNSTimeout:    100 * time.Millisecond,
-		EvalTimeout:   200 * time.Millisecond,
-		FallbackRoute: pac.Route{Strategy: "DIRECT"},
-	}
-	ev, err := pac.NewEvaluator(cfg)
-	if err != nil {
-		t.Fatalf("NewEvaluator: %v", err)
-	}
-	defer ev.Close()
-	route := ev.Evaluate("sub.legacy.com")
-	if route.Strategy != "SOCKS5" {
-		t.Errorf("expected SOCKS5, got %s", route.Strategy)
-	}
-	if route.Address != "legacy:1080" {
-		t.Errorf("expected 'legacy:1080', got %q", route.Address)
-	}
-	route2 := ev.Evaluate("other.com")
-	if route2.Strategy != "DIRECT" {
-		t.Errorf("expected DIRECT, got %s", route2.Strategy)
 	}
 }
 

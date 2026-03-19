@@ -12,6 +12,7 @@ type FWMeta struct {
 	LastUpdated          string `json:"lastUpdated"`
 	RuleCount            int    `json:"ruleCount"`
 	DefaultExternalProxy string `json:"default_external_proxy,omitempty"`
+	EnableURLGlob        bool   `json:"enable_url_glob,omitempty"`
 }
 
 // GeneratePAC merges user rules and GFW rules into PAC JavaScript.
@@ -37,14 +38,43 @@ func GeneratePAC(userRules []Rule, gfwRules []Rule, meta FWMeta) string {
 		resolvedGFW[i] = resolve(gfwRules[i])
 	}
 
-	var sb strings.Builder
+	// Separate GFW rules: exceptions (Action == "DIRECT") and blacklist (Action != "DIRECT")
+	var exceptions, blacklist []Rule
+	for _, r := range resolvedGFW {
+		if r.Action == "DIRECT" {
+			exceptions = append(exceptions, r)
+		} else {
+			blacklist = append(blacklist, r)
+		}
+	}
 
-	// Build combined rules for JSON (use resolved rules)
-	allRules := append(resolvedUser, resolvedGFW...)
+	// Optionally filter URL-glob rules based on meta.EnableURLGlob
+	if !meta.EnableURLGlob {
+		filterURLGlob := func(rules []Rule) []Rule {
+			filtered := make([]Rule, 0, len(rules))
+			for _, r := range rules {
+				if r.Match != MatchURLGlob {
+					filtered = append(filtered, r)
+				}
+			}
+			return filtered
+		}
+		resolvedUser = filterURLGlob(resolvedUser)
+		exceptions = filterURLGlob(exceptions)
+		blacklist = filterURLGlob(blacklist)
+	}
+
+	// Build combined rules in order: user rules, exceptions, blacklist
+	allRules := make([]Rule, 0, len(resolvedUser)+len(exceptions)+len(blacklist))
+	allRules = append(allRules, resolvedUser...)
+	allRules = append(allRules, exceptions...)
+	allRules = append(allRules, blacklist...)
+
 	rf := RulesFile{Version: 1, Rules: allRules}
 	jsonData, _ := json.Marshal(rf)
 
 	// Write __PAC_RULES__ as a JS variable (not comment to avoid */ in data)
+	sb := &strings.Builder{}
 	sb.WriteString("var __PAC_RULES__ = ")
 	sb.Write(jsonData)
 	sb.WriteString(";\n\n")
@@ -53,26 +83,25 @@ func GeneratePAC(userRules []Rule, gfwRules []Rule, meta FWMeta) string {
 	sb.WriteString("// Generated from __PAC_RULES__ — do not edit manually\n")
 	sb.WriteString("function FindProxyForURL(url, host) {\n")
 
-	// User rules
-	if len(resolvedUser) > 0 {
-		sb.WriteString("  // User rules\n")
-		for _, r := range resolvedUser {
-			if !r.Enabled {
-				continue
-			}
-			writeRuleCondition(&sb, r, meta)
+	// Write conditions for each rule in order (they already have correct indices from allRules)
+	for _, r := range allRules {
+		if !r.Enabled {
+			continue
 		}
-	}
-
-	// GFW rules
-	if len(resolvedGFW) > 0 {
-		sb.WriteString("  // GFW rules\n")
-		for _, r := range resolvedGFW {
-			if !r.Enabled {
-				continue
-			}
-			writeRuleCondition(&sb, r, meta)
+		cond := ruleToCondition(r)
+		if cond == "" {
+			continue
 		}
+		route := r.Route
+		if route == "" {
+			if meta.DefaultExternalProxy != "" {
+				route = "DEFAULT"
+			} else {
+				route = "DIRECT"
+			}
+		}
+		fmt.Fprintf(sb, "  if (%s)\n", cond)
+		fmt.Fprintf(sb, "    return %q;\n", route)
 	}
 
 	// Fallback
@@ -80,23 +109,6 @@ func GeneratePAC(userRules []Rule, gfwRules []Rule, meta FWMeta) string {
 	sb.WriteString("}\n")
 
 	return sb.String()
-}
-
-func writeRuleCondition(sb *strings.Builder, r Rule, meta FWMeta) {
-	cond := ruleToCondition(r)
-	if cond == "" {
-		return
-	}
-	route := r.Route
-	if route == "" {
-		if meta.DefaultExternalProxy != "" {
-			route = "DEFAULT"
-		} else {
-			route = "DIRECT"
-		}
-	}
-	fmt.Fprintf(sb, "  if (%s)\n", cond)
-	fmt.Fprintf(sb, "    return %q;\n", route)
 }
 
 // ruleToCondition converts a rule to a PAC JS condition expression.

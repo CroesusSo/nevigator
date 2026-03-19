@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/yourorg/proxy-pac/admin"
+	"github.com/yourorg/proxy-pac/gfw"
 	"github.com/yourorg/proxy-pac/pac"
 	"github.com/yourorg/proxy-pac/router"
 	"github.com/yourorg/proxy-pac/status"
@@ -35,7 +36,8 @@ func TestConfigAPI_IntegrationRoundTrip(t *testing.T) {
 	pacPath := filepath.Join(tmpDir, "pac.js")
 
 	// Write a minimal PAC file
-	if err := os.WriteFile(pacPath, []byte(`function FindProxyForURL(url, host) { return "DIRECT"; }`), 0644); err != nil {
+	pacContent := gfw.GeneratePAC(nil, nil, gfw.FWMeta{})
+	if err := os.WriteFile(pacPath, []byte(pacContent), 0644); err != nil {
 		t.Fatal(err)
 	}
 

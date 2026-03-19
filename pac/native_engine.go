@@ -76,12 +76,15 @@ func (t *domainSuffixTrie) match(host string) *ruleMeta {
 	return bestRule
 }
 
+// ruleMetaRegex stores a compiled regex with its metadata.
 type ruleMetaRegex struct {
 	meta  ruleMeta
 	regex *regexp.Regexp
 }
 
 // NativeRuleEngine evaluates hosts using native data structures.
+// IMPORTANT: hostGlobs slice is built in ascending index order (by rule index).
+// This invariant enables short-circuit evaluation in Evaluate().
 type NativeRuleEngine struct {
 	exactMap   map[string]*ruleMeta
 	suffixTrie *domainSuffixTrie
@@ -187,6 +190,7 @@ func NewNativeRuleEngine(pacContent string, fallback Route) (*NativeRuleEngine, 
 				regex: regex,
 			})
 			globSeen[pattern] = true
+			// hostGlobs will be in ascending index order because we iterate rules in order (i increasing)
 		case gfw.MatchURLGlob:
 			log.Printf("[WARN] Ignoring MatchURLGlob rule for %s: URL-glob not supported in native engine", r.Value)
 			continue
@@ -217,11 +221,34 @@ func (e *NativeRuleEngine) Evaluate(host string) Route {
 				bestIndex = hg.meta.index
 				bestRoute = hg.meta.route
 			}
-			// continue to find lowest index among all matches (no break)
+			// hostGlobs slice is built in ascending index order, so first match
+			// has the lowest index among all glob matches; no need to continue
+			break
 		}
 	}
 	if bestIndex == int(^uint(0)>>1) {
 		return e.fallback
 	}
 	return bestRoute
+}
+
+// shellPatternToRegex converts a shell-style wildcard pattern to a regular expression.
+func shellPatternToRegex(pattern string) string {
+	var sb strings.Builder
+	sb.WriteByte('^')
+	for _, r := range pattern {
+		switch r {
+		case '*':
+			sb.WriteString(".*")
+		case '?':
+			sb.WriteByte('.')
+		case '.', '+', '^', '$', '|', '(', ')', '[', ']', '{', '}', '\\':
+			sb.WriteByte('\\')
+			sb.WriteRune(r)
+		default:
+			sb.WriteRune(r)
+		}
+	}
+	sb.WriteByte('$')
+	return sb.String()
 }
