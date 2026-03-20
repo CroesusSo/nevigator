@@ -57,21 +57,26 @@ func globToRegex(glob string) *regexp.Regexp {
 	return regexp.MustCompile("^" + re + "$")
 }
 
-func invert_segments(pattern string) []string {
+func get_segments(pattern string, reverse bool) []string {
 	pattern = strings.ToLower(pattern)
 	segments := strings.Split(pattern, ".")
-	// reverse segments: mail.abc.com -> ["com","abc","mail"]
-	for i, j := 0, len(segments)-1; i < j; i, j = i+1, j-1 {
-		segments[i], segments[j] = segments[j], segments[i]
+	if reverse {
+		// reverse segments: mail.abc.com -> ["com","abc","mail"]
+		for i, j := 0, len(segments)-1; i < j; i, j = i+1, j-1 {
+			segments[i], segments[j] = segments[j], segments[i]
+		}
 	}
 	return segments
 }
 
 func (t *domainSuffixTrie) insert(pattern string, meta ruleMeta) {
-	segments := invert_segments(pattern)
+	segments := get_segments(pattern, false)
 
 	node := t.root
-	for i, seg := range segments {
+
+	// proceed in reverse order www.google.com -> "com" "google" "www"
+	for i := len(segments) - 1; i >= 0; i-- {
+		seg := segments[i]
 		if seg == "*" {
 			// handle catch all (*)
 			if node.wildcards_child == nil {
@@ -79,16 +84,16 @@ func (t *domainSuffixTrie) insert(pattern string, meta ruleMeta) {
 			}
 			node = node.wildcards_child
 		} else if strings.ContainsAny(seg, "*?") {
-			// handle partial globs
-			if i == len(segments)-1 {
-				// if it's last segment
+			// handle partial globs i.e ay-*.example.com
+			if i == 0 {
+				// if it's last segment (we proceed in reverse order)
 				node.regex_patterns = append(node.regex_patterns, RegexRule{
 					pattern: globToRegex(seg),
 					rule:    &ruleMeta{index: meta.index, route: meta.route},
 				})
 				return
 			}
-			// TODO: we did not take care of complex globs ("a.*.c")
+			// TODO: we did not take care of complex globs ("a.ay-*.c")
 		} else {
 			// handle exact map
 			if _, ok := node.children[seg]; !ok {
@@ -109,11 +114,13 @@ func (t *domainSuffixTrie) match(host string, deepest bool) *ruleMeta {
 		host = h
 	}
 
-	segments := invert_segments(host)
+	segments := get_segments(host, false)
 	var last_rule *ruleMeta
 	node := t.root
 
-	for _, seg := range segments {
+	// proceed in reverse order www.google.com -> "com" "google" "www"
+	for i := len(segments) - 1; i >= 0; i-- {
+		seg := segments[i]
 		// 1. Check for a rule at current level (LPM)
 		if node.rule != nil {
 			last_rule = node.rule
