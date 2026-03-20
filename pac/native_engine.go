@@ -6,7 +6,6 @@ import (
 	"log"
 	"net"
 	"regexp"
-	"sort"
 	"strings"
 
 	"github.com/yourorg/proxy-pac/gfw"
@@ -20,33 +19,86 @@ type ruleMeta struct {
 
 // domainSuffixTrie is a reversed-label trie for domain suffix matching.
 type domainSuffixTrie struct {
-	root *trieNode
+	root *TrieNode
 }
 
-type trieNode struct {
-	children map[string]*trieNode
-	rule     *ruleMeta
+type RegexRule struct {
+	pattern *regexp.Regexp
+	rule    *ruleMeta
+}
+
+type TrieNode struct {
+	// exactMap
+	children map[string]*TrieNode
+	// child of (*)
+	wildcards_child *TrieNode
+	// compiled regex patterns
+	regex_patterns []RegexRule
+
+	// proxy result if rule ends exactly at the node
+	rule *ruleMeta
+}
+
+func newTrieNode() *TrieNode {
+	return &TrieNode{
+		children: make(map[string]*TrieNode),
+	}
 }
 
 func newDomainSuffixTrie() *domainSuffixTrie {
-	return &domainSuffixTrie{root: &trieNode{children: make(map[string]*trieNode)}}
+	return &domainSuffixTrie{root: newTrieNode()}
+}
+
+func globToRegex(glob string) *regexp.Regexp {
+	// Escape special regex chars, then swap glob wildcards for regex equivalents
+	re := regexp.QuoteMeta(glob)
+	re = strings.ReplaceAll(re, "\\*", ".*")
+	re = strings.ReplaceAll(re, "\\?", ".")
+	return regexp.MustCompile("^" + re + "$")
+}
+
+func invert_segments(pattern string) []string {
+	pattern = strings.ToLower(pattern)
+	segments := strings.Split(pattern, ".")
+	// reverse segments: mail.abc.com -> ["com","abc","mail"]
+	for i, j := 0, len(segments)-1; i < j; i, j = i+1, j-1 {
+		segments[i], segments[j] = segments[j], segments[i]
+	}
+	return segments
 }
 
 func (t *domainSuffixTrie) insert(pattern string, meta ruleMeta) {
-	labels := strings.Split(pattern, ".")
-	for i, j := 0, len(labels)-1; i < j; i, j = i+1, j-1 {
-		labels[i], labels[j] = labels[j], labels[i]
-	}
+	segments := invert_segments(pattern)
+
 	node := t.root
-	for _, label := range labels {
-		child, ok := node.children[label]
-		if !ok {
-			child = &trieNode{children: make(map[string]*trieNode)}
-			node.children[label] = child
+	for i, seg := range segments {
+		if seg == "*" {
+			// handle catch all (*)
+			if node.wildcards_child == nil {
+				node.wildcards_child = newTrieNode()
+			}
+			node = node.wildcards_child
+		} else if strings.ContainsAny(seg, "*?") {
+			// handle partial globs
+			if i == len(segments)-1 {
+				// if it's last segment
+				node.regex_patterns = append(node.regex_patterns, RegexRule{
+					pattern: globToRegex(seg),
+					rule:    &ruleMeta{index: meta.index, route: meta.route},
+				})
+				return
+			}
+			// TODO: we did not take care of complex globs ("a.*.c")
+		} else {
+			// handle exact map
+			if _, ok := node.children[seg]; !ok {
+				node.children[seg] = newTrieNode()
+			}
+			node = node.children[seg]
 		}
-		node = child
 	}
-	if node.rule == nil || meta.index < node.rule.index {
+	// set leaf rule for exact match
+	if node.rule == nil {
 		node.rule = &ruleMeta{index: meta.index, route: meta.route}
 	}
 }
@@ -56,64 +108,38 @@ func (t *domainSuffixTrie) match(host string, deepest bool) *ruleMeta {
 	if h, _, err := net.SplitHostPort(host); err == nil {
 		host = h
 	}
-	labels := strings.Split(host, ".")
-	// reverse labels to trie order (TLD first)
-	for i, j := 0, len(labels)-1; i < j; i, j = i+1, j-1 {
-		labels[i], labels[j] = labels[j], labels[i]
-	}
-	bestIndex := int(^uint(0) >> 1)
-	bestDepth := -1
-	var bestRule *ruleMeta
+
+	segments := invert_segments(host)
+	var last_rule *ruleMeta
 	node := t.root
-	for depth, label := range labels {
-		child, ok := node.children[label]
-		if !ok {
-			break
-		}
-		node = child
+
+	for _, seg := range segments {
+		// 1. Check for a rule at current level (LPM)
 		if node.rule != nil {
-			if deepest {
-				if depth > bestDepth || (depth == bestDepth && node.rule.index < bestIndex) {
-					bestDepth = depth
-					bestIndex = node.rule.index
-					bestRule = node.rule
-				}
-			} else {
-				if node.rule.index < bestIndex {
-					bestIndex = node.rule.index
-					bestRule = node.rule
-				}
+			last_rule = node.rule
+		}
+		// 2. Try exact match
+		if next, ok := node.children[seg]; ok {
+			node = next
+			continue
+		}
+		// 3. Try Regex/Glob
+		for _, regex_rule := range node.regex_patterns {
+			if regex_rule.pattern.MatchString(seg) {
+				return regex_rule.rule
 			}
 		}
+		// 4. Try Catch all wildcard
+		if node.wildcards_child != nil {
+			node = node.wildcards_child
+			continue
+		}
+		break
 	}
-	return bestRule
-}
-
-// specificityScore computes a specificity metric for a host glob pattern.
-// Higher score means more specific (longer pattern, fewer wildcards).
-func specificityScore(pattern string) int {
-	length := len(pattern)
-	wildcards := strings.Count(pattern, "*") + strings.Count(pattern, "?")
-	return length - wildcards
-}
-
-// ruleMetaRegex stores a compiled regex with its metadata.
-type ruleMetaRegex struct {
-	meta  ruleMeta
-	regex *regexp.Regexp
-	pat   string
-	spec  int
-}
-
-// NativeRuleEngine evaluates hosts using native data structures.
-// IMPORTANT: hostGlobs slice is built in ascending index order (by rule index).
-// This invariant enables short-circuit evaluation in Evaluate().
-type NativeRuleEngine struct {
-	exactMap      map[string]*ruleMeta
-	suffixTrie    *domainSuffixTrie
-	hostGlobs     []ruleMetaRegex
-	fallback      Route
-	enableDeepest bool
+	if node.rule != nil {
+		return node.rule
+	}
+	return last_rule
 }
 
 func parsePACRulesJSON(pacContent string) ([]gfw.Rule, error) {
@@ -167,20 +193,28 @@ func routeFromString(s string) Route {
 	}
 }
 
+// NativeRuleEngine evaluates hosts using native data structures.
+// IMPORTANT: hostGlobs slice is built in ascending index order (by rule index).
+// This invariant enables short-circuit evaluation in Evaluate().
+type NativeRuleEngine struct {
+	suffixTrie    *domainSuffixTrie
+	fallback      Route
+	enableDeepest bool
+}
+
 // NewNativeRuleEngine builds a native rule engine from PAC content.
 func NewNativeRuleEngine(pacContent string, fallback Route, enableDeepest bool) (*NativeRuleEngine, error) {
 	rules, err := parsePACRulesJSON(pacContent)
 	if err != nil {
 		return nil, err
 	}
+
 	engine := &NativeRuleEngine{
-		exactMap:      make(map[string]*ruleMeta),
 		suffixTrie:    newDomainSuffixTrie(),
-		hostGlobs:     make([]ruleMetaRegex, 0),
 		fallback:      fallback,
 		enableDeepest: enableDeepest,
 	}
-	globSeen := make(map[string]bool)
+
 	for i, r := range rules {
 		if !r.Enabled {
 			continue
@@ -188,105 +222,30 @@ func NewNativeRuleEngine(pacContent string, fallback Route, enableDeepest bool) 
 		meta := ruleMeta{index: i, route: routeFromString(r.Route)}
 		switch r.Match {
 		case gfw.MatchExact:
-			host := strings.ToLower(r.Value)
-			if h, _, err := net.SplitHostPort(host); err == nil {
-				host = h
-			}
-			if existing, ok := engine.exactMap[host]; !ok || meta.index < existing.index {
-				engine.exactMap[host] = &ruleMeta{index: meta.index, route: meta.route}
-			}
-		case gfw.MatchDomainSuffix:
-			pattern := strings.TrimPrefix(r.Value, ".")
-			pattern = strings.ToLower(pattern)
+			pattern := r.Value
 			engine.suffixTrie.insert(pattern, meta)
+
 		case gfw.MatchHostGlob:
 			pattern := r.Value
-			if globSeen[pattern] {
-				continue
-			}
-			regexStr := shellPatternToRegex(pattern)
-			regex, err := regexp.Compile(regexStr)
-			if err != nil {
-				log.Printf("[WARN] Invalid host glob pattern %q: %v", pattern, err)
-				continue
-			}
-			engine.hostGlobs = append(engine.hostGlobs, ruleMetaRegex{
-				meta:  meta,
-				regex: regex,
-				pat:   pattern,
-			})
-			globSeen[pattern] = true
-			// hostGlobs will be in ascending index order because we iterate rules in order (i increasing)
+			engine.suffixTrie.insert(pattern, meta)
+
+		case gfw.MatchDomainSuffix:
+			pattern := strings.TrimPrefix(r.Value, ".")
+			engine.suffixTrie.insert(pattern, meta)
+
 		case gfw.MatchURLGlob:
 			log.Printf("[WARN] Ignoring MatchURLGlob rule for %s: URL-glob not supported in native engine", r.Value)
 			continue
 		}
-	}
-	// If deepest matching enabled, sort hostGlobs by specificity
-	if engine.enableDeepest {
-		for i := range engine.hostGlobs {
-			engine.hostGlobs[i].spec = specificityScore(engine.hostGlobs[i].pat)
-		}
-		sort.Slice(engine.hostGlobs, func(i, j int) bool {
-			if engine.hostGlobs[i].spec != engine.hostGlobs[j].spec {
-				return engine.hostGlobs[i].spec > engine.hostGlobs[j].spec
-			}
-			return engine.hostGlobs[i].meta.index < engine.hostGlobs[j].meta.index
-		})
 	}
 	return engine, nil
 }
 
 // Evaluate returns the best matching route for the given host.
 func (e *NativeRuleEngine) Evaluate(host string) Route {
-	host = strings.ToLower(host)
-	if h, _, err := net.SplitHostPort(host); err == nil {
-		host = h
+	rule := e.suffixTrie.match(host, e.enableDeepest)
+	if rule != nil {
+		return rule.route
 	}
-	bestIndex := int(^uint(0) >> 1)
-	var bestRoute Route
-	if m, ok := e.exactMap[host]; ok && m.index < bestIndex {
-		bestIndex = m.index
-		bestRoute = m.route
-	}
-	if m := e.suffixTrie.match(host, e.enableDeepest); m != nil && m.index < bestIndex {
-		bestIndex = m.index
-		bestRoute = m.route
-	}
-	for _, hg := range e.hostGlobs {
-		if hg.regex.MatchString(host) {
-			if hg.meta.index < bestIndex {
-				bestIndex = hg.meta.index
-				bestRoute = hg.meta.route
-			}
-			// hostGlobs slice is built in ascending index order, so first match
-			// has the lowest index among all glob matches; no need to continue
-			break
-		}
-	}
-	if bestIndex == int(^uint(0)>>1) {
-		return e.fallback
-	}
-	return bestRoute
-}
-
-// shellPatternToRegex converts a shell-style wildcard pattern to a regular expression.
-func shellPatternToRegex(pattern string) string {
-	var sb strings.Builder
-	sb.WriteByte('^')
-	for _, r := range pattern {
-		switch r {
-		case '*':
-			sb.WriteString(".*")
-		case '?':
-			sb.WriteByte('.')
-		case '.', '+', '^', '$', '|', '(', ')', '[', ']', '{', '}', '\\':
-			sb.WriteByte('\\')
-			sb.WriteRune(r)
-		default:
-			sb.WriteRune(r)
-		}
-	}
-	sb.WriteByte('$')
-	return sb.String()
+	return e.fallback
 }
