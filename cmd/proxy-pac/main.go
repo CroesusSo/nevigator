@@ -34,16 +34,17 @@ type Config struct {
 		TLS                  pac.TLSConfig       `yaml:"tls"`
 	} `yaml:"proxy"`
 	PAC struct {
-		LocalIP        string        `yaml:"local_ip"`
-		DNSTimeout     time.Duration `yaml:"dns_timeout"`
-		EvalTimeout    time.Duration `yaml:"eval_timeout"`
-		EnableDNSCache bool          `yaml:"enable_dns_cache"`
-		EnableURLGlob  bool          `yaml:"enable_url_glob"`
-		DNSMaxEntries  int           `yaml:"dns_max_entries"`
-		DNSTTL         time.Duration `yaml:"dns_ttl"`
-		CacheEnabled   bool          `yaml:"cache_enabled"`
-		CacheMaxSize   int           `yaml:"cache_max_size"`
-		CacheTTL       time.Duration `yaml:"cache_ttl"`
+		LocalIP            string        `yaml:"local_ip"`
+		DNSTimeout         time.Duration `yaml:"dns_timeout"`
+		EvalTimeout        time.Duration `yaml:"eval_timeout"`
+		EnableDNSCache     bool          `yaml:"enable_dns_cache"`
+		EnableURLGlob      bool          `yaml:"enable_url_glob"`
+		EnableDeepestMatch bool          `yaml:"enable_deepest_match"`
+		DNSMaxEntries      int           `yaml:"dns_max_entries"`
+		DNSTTL             time.Duration `yaml:"dns_ttl"`
+		CacheEnabled       bool          `yaml:"cache_enabled"`
+		CacheMaxSize       int           `yaml:"cache_max_size"`
+		CacheTTL           time.Duration `yaml:"cache_ttl"`
 	} `yaml:"pac"`
 	GFW struct {
 		SourceURL        string        `yaml:"source_url"`
@@ -85,6 +86,9 @@ func loadConfig(path string) (*Config, error) {
 	}
 	if !cfg.PAC.EnableURLGlob {
 		cfg.PAC.EnableURLGlob = false
+	}
+	if !cfg.PAC.EnableDeepestMatch {
+		cfg.PAC.EnableDeepestMatch = false
 	}
 	return &cfg, nil
 }
@@ -250,15 +254,16 @@ func main() {
 
 	// Create PAC evaluator
 	evalCfg := pac.EvaluatorConfig{
-		PACPath:        cfg.Proxy.PACPath,
-		LocalIP:        localIP,
-		DNSTimeout:     cfg.PAC.DNSTimeout,
-		EvalTimeout:    cfg.PAC.EvalTimeout,
-		EnableDNSCache: cfg.PAC.EnableDNSCache,
-		CacheEnabled:   cfg.PAC.CacheEnabled,
-		CacheMaxSize:   cfg.PAC.CacheMaxSize,
-		CacheTTL:       cfg.PAC.CacheTTL,
-		FallbackRoute:  pac.Route{Strategy: "DIRECT"},
+		PACPath:            cfg.Proxy.PACPath,
+		LocalIP:            localIP,
+		DNSTimeout:         cfg.PAC.DNSTimeout,
+		EvalTimeout:        cfg.PAC.EvalTimeout,
+		EnableDNSCache:     cfg.PAC.EnableDNSCache,
+		EnableDeepestMatch: cfg.PAC.EnableDeepestMatch,
+		CacheEnabled:       cfg.PAC.CacheEnabled,
+		CacheMaxSize:       cfg.PAC.CacheMaxSize,
+		CacheTTL:           cfg.PAC.CacheTTL,
+		FallbackRoute:      pac.Route{Strategy: "DIRECT"},
 	}
 	evaluator, err := pac.NewEvaluator(evalCfg)
 	if err != nil {

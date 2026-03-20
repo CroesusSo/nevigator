@@ -25,7 +25,7 @@ func makeEngineWithRules(rules []gfw.Rule) *NativeRuleEngine {
 	rf := gfw.RulesFile{Version: 1, Rules: rules}
 	jsonData, _ := json.Marshal(rf)
 	pac := "var __PAC_RULES__ = " + string(jsonData) + ";\nfunction FindProxyForURL(url, host) {}"
-	engine, _ := NewNativeRuleEngine(pac, Route{Strategy: "DIRECT"})
+	engine, _ := NewNativeRuleEngine(pac, Route{Strategy: "DIRECT"}, false)
 	return engine
 }
 

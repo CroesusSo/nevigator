@@ -22,7 +22,7 @@ func FuzzDomainSuffixTrie(f *testing.F) {
 		trie.insert(pattern, meta)
 
 		// The pattern itself should match
-		got := trie.match(pattern)
+		got := trie.match(pattern, false)
 		if got == nil {
 			t.Fatalf("pattern %q did not match itself", pattern)
 		}
@@ -34,7 +34,7 @@ func FuzzDomainSuffixTrie(f *testing.F) {
 		if index2 := index + 1; index2 > index {
 			meta2 := ruleMeta{index: index2, route: Route{Strategy: "DIRECT"}}
 			trie.insert(pattern, meta2)
-			got = trie.match(pattern)
+			got = trie.match(pattern, false)
 			if got.index != index {
 				t.Fatalf("after duplicate with higher index, expected %d, got %d", index, got.index)
 			}

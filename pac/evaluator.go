@@ -151,7 +151,7 @@ func (e *Evaluator) reload() error {
 	}
 
 	// Native engine only: PAC must contain __PAC_RULES__
-	engine, err := NewNativeRuleEngine(string(src), e.cfg.FallbackRoute)
+	engine, err := NewNativeRuleEngine(string(src), e.cfg.FallbackRoute, e.cfg.EnableDeepestMatch)
 	if err != nil {
 		log.Printf("[WARN] Native engine build failed: %v", err)
 		// No fallback to JS; keep current engine if possible
