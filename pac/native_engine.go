@@ -79,10 +79,16 @@ func (t *domainSuffixTrie) insert(pattern string, meta ruleMeta) {
 		seg := segments[i]
 		if seg == "*" {
 			// handle catch all (*)
-			if node.wildcards_child == nil {
-				node.wildcards_child = newTrieNode()
+			// if it's last segment
+			if i == 0 {
+				if node.wildcards_child == nil {
+					node.wildcards_child = newTrieNode()
+				}
+				node = node.wildcards_child
+			} else {
+				log.Printf("[WARN] Ignoring middle * rule for %s", pattern, seg)
+				return
 			}
-			node = node.wildcards_child
 		} else if strings.ContainsAny(seg, "*?") {
 			// handle partial globs i.e ay-*.example.com
 			if i == 0 {
@@ -92,8 +98,11 @@ func (t *domainSuffixTrie) insert(pattern string, meta ruleMeta) {
 					rule:    &ruleMeta{index: meta.index, route: meta.route},
 				})
 				return
+			} else {
+				// TODO: we did not take care of complex globs ("a.ay-*.c")
+				log.Printf("[WARN] Ignoring middle Glob rule for %s:(%s)", pattern, seg)
+				return
 			}
-			// TODO: we did not take care of complex globs ("a.ay-*.c")
 		} else {
 			// handle exact map
 			if _, ok := node.children[seg]; !ok {
@@ -121,7 +130,7 @@ func (t *domainSuffixTrie) match(host string, deepest bool) *ruleMeta {
 	// proceed in reverse order www.google.com -> "com" "google" "www"
 	for i := len(segments) - 1; i >= 0; i-- {
 		seg := segments[i]
-		// 1. Check for a rule at current level (LPM)
+		// 1. Check for a rule at current depth (LPM)
 		if node.rule != nil {
 			last_rule = node.rule
 		}
@@ -141,8 +150,11 @@ func (t *domainSuffixTrie) match(host string, deepest bool) *ruleMeta {
 			node = node.wildcards_child
 			continue
 		}
+
+		// no more match at this depth
 		break
 	}
+
 	if node.rule != nil {
 		return node.rule
 	}

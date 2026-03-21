@@ -344,6 +344,7 @@ func (h *Handler) handleUI(w http.ResponseWriter, r *http.Request) {
            <thead>
              <tr>
                <th width="120">Match Type <span title="domain_suffix: match domain suffixes; host_glob: * and ? wildcards for hostnames; url_glob: * and ? wildcards for full URLs; exact: exact match">?</span></th>
+               <th width="60">Route</th>
                <th>Pattern</th>
              </tr>
            </thead>
@@ -860,7 +861,7 @@ let gfwRules = [];
             // Render one row to measure height
             const tempTr = document.createElement('tr');
             tempTr.className = 'gfw-row';
-            tempTr.innerHTML = '<td><span class="badge badge-host_glob">host_glob</span></td><td><code>example</code></td>';
+            tempTr.innerHTML = '<td width="120"><span class="badge badge-host_glob">host_glob</span></td><td width="60"><code>example</code></td><td><code>example</code></td>';
             tbody.appendChild(tempTr);
             gfwRowHeight = tempTr.offsetHeight;
             tbody.innerHTML = '';
@@ -917,7 +918,8 @@ let gfwRules = [];
          const matchBadge = '<span class="badge badge-' + r.match + '" title="' + tooltips.match[r.match] + '">' + escHtml(r.match) + '</span>';
          
          tr.innerHTML =
-           '<td title="' + tooltips.match[r.match] + '">' + matchBadge + '</td>' +
+           '<td width="120" title="' + tooltips.match[r.match] + '">' + matchBadge + '</td>' +
+           '<td width="60"><code>' + escHtml(r.action) + '</code></td>' +
            '<td><code>' + escHtml(r.value) + '</code></td>';
          tbody.appendChild(tr);
        });
