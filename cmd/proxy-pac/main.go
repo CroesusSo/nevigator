@@ -34,19 +34,19 @@ type Config struct {
 		TLS                  pac.TLSConfig       `yaml:"tls"`
 	} `yaml:"proxy"`
 	PAC struct {
-		LocalIP            string        `yaml:"local_ip"`
-		DNSTimeout         time.Duration `yaml:"dns_timeout"`
-		EvalTimeout        time.Duration `yaml:"eval_timeout"`
-		EnableDNSCache     bool          `yaml:"enable_dns_cache"`
-		EnableURLGlob      bool          `yaml:"enable_url_glob"`
-		EnableDeepestMatch bool          `yaml:"enable_deepest_match"`
-		DNSMaxEntries      int           `yaml:"dns_max_entries"`
-		DNSTTL             time.Duration `yaml:"dns_ttl"`
-		CacheEnabled       bool          `yaml:"cache_enabled"`
-		CacheMaxSize       int           `yaml:"cache_max_size"`
-		CacheTTL           time.Duration `yaml:"cache_ttl"`
+		LocalIP        string        `yaml:"local_ip"`
+		DNSTimeout     time.Duration `yaml:"dns_timeout"`
+		EvalTimeout    time.Duration `yaml:"eval_timeout"`
+		EnableDNSCache bool          `yaml:"enable_dns_cache"`
+		EnableURLGlob  bool          `yaml:"enable_url_glob"`
+		DNSMaxEntries  int           `yaml:"dns_max_entries"`
+		DNSTTL         time.Duration `yaml:"dns_ttl"`
+		CacheEnabled   bool          `yaml:"cache_enabled"`
+		CacheMaxSize   int           `yaml:"cache_max_size"`
+		CacheTTL       time.Duration `yaml:"cache_ttl"`
 	} `yaml:"pac"`
 	GFW struct {
+		Disabled         bool          `yaml:"disabled" json:"disabled"`
 		SourceURL        string        `yaml:"source_url"`
 		LocalRulesPath   string        `yaml:"local_rules_path"`
 		UserRulesPath    string        `yaml:"user_rules_path"`
@@ -87,9 +87,6 @@ func loadConfig(path string) (*Config, error) {
 	if !cfg.PAC.EnableURLGlob {
 		cfg.PAC.EnableURLGlob = false
 	}
-	if !cfg.PAC.EnableDeepestMatch {
-		cfg.PAC.EnableDeepestMatch = false
-	}
 	return &cfg, nil
 }
 
@@ -123,6 +120,19 @@ func defaultConfigYAML(pacPath string) string {
   tun_device: "tun0"
   default_external_proxy: ""
   external_proxies: []
+  tls:
+    certificate_file: ""
+    key_file: ""
+    ca_file: ""
+    min_version: 0
+    max_version: 0
+    cipher_suites: []
+    prefer_server_cipher_suites: false
+    session_tickets_disabled: false
+    client_auth: ""
+    client_cas: ""
+    insecure_skip_verify: false
+    timeout: 0s
 
 pac:
   local_ip: ""
@@ -137,6 +147,7 @@ pac:
   cache_ttl: 10m
 
 gfw:
+  disabled: false
   source_url: "https://raw.githubusercontent.com/gfwlist/gfwlist/master/gfwlist.txt"
   local_rules_path: "%s"
   user_rules_path: "%s"
@@ -144,6 +155,7 @@ gfw:
   update_interval: 24h
   fetch_on_startup: true
   http_timeout: 60s
+  custom_dns_servers: []
 `, pacPath, filepath.Join(defaultConfigDir, "gfw-rules.json"), filepath.Join(defaultConfigDir, "user-rules.json"))
 }
 
@@ -254,16 +266,15 @@ func main() {
 
 	// Create PAC evaluator
 	evalCfg := pac.EvaluatorConfig{
-		PACPath:            cfg.Proxy.PACPath,
-		LocalIP:            localIP,
-		DNSTimeout:         cfg.PAC.DNSTimeout,
-		EvalTimeout:        cfg.PAC.EvalTimeout,
-		EnableDNSCache:     cfg.PAC.EnableDNSCache,
-		EnableDeepestMatch: cfg.PAC.EnableDeepestMatch,
-		CacheEnabled:       cfg.PAC.CacheEnabled,
-		CacheMaxSize:       cfg.PAC.CacheMaxSize,
-		CacheTTL:           cfg.PAC.CacheTTL,
-		FallbackRoute:      pac.Route{Strategy: "DIRECT"},
+		PACPath:        cfg.Proxy.PACPath,
+		LocalIP:        localIP,
+		DNSTimeout:     cfg.PAC.DNSTimeout,
+		EvalTimeout:    cfg.PAC.EvalTimeout,
+		EnableDNSCache: cfg.PAC.EnableDNSCache,
+		CacheEnabled:   cfg.PAC.CacheEnabled,
+		CacheMaxSize:   cfg.PAC.CacheMaxSize,
+		CacheTTL:       cfg.PAC.CacheTTL,
+		FallbackRoute:  pac.Route{Strategy: "DIRECT"},
 	}
 	evaluator, err := pac.NewEvaluator(evalCfg)
 	if err != nil {
@@ -320,6 +331,7 @@ func main() {
 		}
 
 		gfwFetcher = gfw.NewFetcher(cfg.GFW.SourceURL, gfwPath, httpTimeout)
+		gfwFetcher.SetDisabled(cfg.GFW.Disabled)
 
 		// IMPORTANT: Do NOT bind GFW fetcher to TUN interface to avoid DNS resolution issues
 		// The GFW list must be fetched using the system's default network interface
@@ -349,7 +361,7 @@ func main() {
 		}
 
 		// Fetch on startup
-		if cfg.GFW.FetchOnStartup {
+		if cfg.GFW.FetchOnStartup && !gfwFetcher.IsDisabled() {
 			go func() {
 				log.Printf("[GFW] Fetching GFW list on startup...")
 				result := gfwFetcher.Fetch(context.Background())
@@ -357,7 +369,7 @@ func main() {
 					log.Printf("[GFW] Startup fetch failed: %v", result.Error)
 				} else if result.Updated {
 					log.Printf("[GFW] Startup fetch: %d rules loaded", result.RuleCount)
-					regeneratePAC(userPath, gfwPath, cfg.Proxy.PACPath, cfg.Proxy.DefaultExternalProxy, cfg.PAC.EnableURLGlob)
+					regeneratePAC(userPath, gfwPath, cfg.Proxy.PACPath, cfg.Proxy.DefaultExternalProxy, cfg.PAC.EnableURLGlob, !gfwFetcher.IsDisabled())
 				}
 			}()
 		}
@@ -368,13 +380,16 @@ func main() {
 				ticker := time.NewTicker(cfg.GFW.UpdateInterval)
 				defer ticker.Stop()
 				for range ticker.C {
+					if gfwFetcher.IsDisabled() {
+						continue
+					}
 					log.Printf("[GFW] Periodic fetch...")
 					result := gfwFetcher.Fetch(context.Background())
 					if result.Error != nil {
 						log.Printf("[GFW] Periodic fetch failed: %v", result.Error)
 					} else if result.Updated {
 						log.Printf("[GFW] Periodic fetch: %d rules updated", result.RuleCount)
-						regeneratePAC(userPath, gfwPath, cfg.Proxy.PACPath, cfg.Proxy.DefaultExternalProxy, cfg.PAC.EnableURLGlob)
+						regeneratePAC(userPath, gfwPath, cfg.Proxy.PACPath, cfg.Proxy.DefaultExternalProxy, cfg.PAC.EnableURLGlob, !gfwFetcher.IsDisabled())
 					}
 				}
 			}()
@@ -419,8 +434,8 @@ func errorsIs(err, target error) bool {
 }
 
 // regeneratePAC reads user and GFW rules, generates PAC, and writes it.
-func regeneratePAC(userPath, gfwPath, pacPath string, defaultExternalProxy string, enableURLGlob bool) {
-	if err := gfw.RegeneratePAC(userPath, gfwPath, pacPath, defaultExternalProxy, enableURLGlob); err != nil {
+func regeneratePAC(userPath, gfwPath, pacPath string, defaultExternalProxy string, enableURLGlob bool, enabled bool) {
+	if err := gfw.RegeneratePAC(userPath, gfwPath, pacPath, defaultExternalProxy, enableURLGlob, enabled); err != nil {
 		log.Printf("[PAC] Regeneration failed: %v", err)
 	}
 }

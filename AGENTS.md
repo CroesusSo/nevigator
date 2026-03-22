@@ -131,3 +131,4 @@ func NewEvaluator(cfg EvaluatorConfig) (*Evaluator, error) { ... }
 - Route fallback: if chosen route fails (not DIRECT), automatically retries DIRECT
 - SOCKS5 handshake implemented manually in `router/router.go` and `proxy/server.go`
 - Admin UI is inline HTML in `admin/handlers.go` (no template files)
+- GFW fetching can be disabled via the `Disabled` flag (default false). When disabled, no fetches occur (startup, periodic, manual) and PAC generation excludes GFW rules. The flag is atomic and checked in main loops.

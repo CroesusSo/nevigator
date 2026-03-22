@@ -224,9 +224,11 @@ func (e *Evaluator) logCacheStatsLoop() {
 
 // Close stops background processes. Safe to call multiple times.
 func (e *Evaluator) Close() error {
-	e.closeOnce.Do(func() { close(e.stopped) })
-	if e.cache != nil {
-		e.cache.Close()
-	}
+	e.closeOnce.Do(func() {
+		close(e.stopped)
+		if e.cache != nil {
+			e.cache.Close()
+		}
+	})
 	return nil
 }

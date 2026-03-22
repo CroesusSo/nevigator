@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -16,6 +17,7 @@ type Fetcher struct {
 	SourceURL  string
 	LocalPath  string
 	HTTPClient *http.Client
+	disabled   int32 // 0=enabled, 1=disabled (atomic)
 
 	mu        sync.Mutex
 	lastFetch time.Time
@@ -51,11 +53,29 @@ func NewFetcher(sourceURL, localPath string, timeout time.Duration) *Fetcher {
 		SourceURL:  sourceURL,
 		LocalPath:  localPath,
 		HTTPClient: &http.Client{Timeout: timeout},
+		disabled:   0,
 	}
+}
+
+// SetDisabled enables or disables fetching.
+func (f *Fetcher) SetDisabled(disabled bool) {
+	if disabled {
+		atomic.StoreInt32(&f.disabled, 1)
+	} else {
+		atomic.StoreInt32(&f.disabled, 0)
+	}
+}
+
+// IsDisabled reports whether fetching is disabled.
+func (f *Fetcher) IsDisabled() bool {
+	return atomic.LoadInt32(&f.disabled) == 1
 }
 
 // Fetch downloads the gfwlist, decodes it, parses rules, and saves if changed.
 func (f *Fetcher) Fetch(ctx context.Context) FetchResult {
+	if f.IsDisabled() {
+		return FetchResult{Error: fmt.Errorf("GFW fetching disabled")}
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 

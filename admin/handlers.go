@@ -84,26 +84,27 @@ type FullConfig struct {
 		TLS                  pac.TLSConfig       `yaml:"tls" json:"tls"` // TLS configuration for HTTPS proxy (certificate, key, CA, client auth)
 	} `yaml:"proxy"`
 	PAC struct {
-		LocalIP            string        `yaml:"local_ip" json:"local_ip"`
-		DNSTimeout         time.Duration `yaml:"dns_timeout" json:"dns_timeout"`
-		EvalTimeout        time.Duration `yaml:"eval_timeout" json:"eval_timeout"`
-		EnableDNSCache     bool          `yaml:"enable_dns_cache" json:"enable_dns_cache"`
-		EnableURLGlob      bool          `yaml:"enable_url_glob" json:"enable_url_glob"`
-		EnableDeepestMatch bool          `yaml:"enable_deepest_match" json:"enable_deepest_match"`
-		DNSMaxEntries      int           `yaml:"dns_max_entries" json:"dns_max_entries"`
-		DNSTTL             time.Duration `yaml:"dns_ttl" json:"dns_ttl"`
-		CacheEnabled       bool          `yaml:"cache_enabled" json:"cache_enabled"`
-		CacheMaxSize       int           `yaml:"cache_max_size" json:"cache_max_size"`
-		CacheTTL           time.Duration `yaml:"cache_ttl" json:"cache_ttl"`
+		LocalIP        string        `yaml:"local_ip" json:"local_ip"`
+		DNSTimeout     time.Duration `yaml:"dns_timeout" json:"dns_timeout"`
+		EvalTimeout    time.Duration `yaml:"eval_timeout" json:"eval_timeout"`
+		EnableDNSCache bool          `yaml:"enable_dns_cache" json:"enable_dns_cache"`
+		EnableURLGlob  bool          `yaml:"enable_url_glob" json:"enable_url_glob"`
+		DNSMaxEntries  int           `yaml:"dns_max_entries" json:"dns_max_entries"`
+		DNSTTL         time.Duration `yaml:"dns_ttl" json:"dns_ttl"`
+		CacheEnabled   bool          `yaml:"cache_enabled" json:"cache_enabled"`
+		CacheMaxSize   int           `yaml:"cache_max_size" json:"cache_max_size"`
+		CacheTTL       time.Duration `yaml:"cache_ttl" json:"cache_ttl"`
 	} `yaml:"pac"`
 	GFW struct {
-		SourceURL      string        `yaml:"source_url" json:"source_url"`
-		LocalRulesPath string        `yaml:"local_rules_path" json:"local_rules_path"`
-		UserRulesPath  string        `yaml:"user_rules_path" json:"user_rules_path"`
-		UseTUN         bool          `yaml:"use_tun" json:"use_tun"`
-		UpdateInterval time.Duration `yaml:"update_interval" json:"update_interval"`
-		FetchOnStartup bool          `yaml:"fetch_on_startup" json:"fetch_on_startup"`
-		HTTPTimeout    time.Duration `yaml:"http_timeout" json:"http_timeout"`
+		Disabled         bool          `yaml:"disabled" json:"disabled"`
+		SourceURL        string        `yaml:"source_url" json:"source_url"`
+		LocalRulesPath   string        `yaml:"local_rules_path" json:"local_rules_path"`
+		UserRulesPath    string        `yaml:"user_rules_path" json:"user_rules_path"`
+		UseTUN           bool          `yaml:"use_tun" json:"use_tun"`
+		UpdateInterval   time.Duration `yaml:"update_interval" json:"update_interval"`
+		FetchOnStartup   bool          `yaml:"fetch_on_startup" json:"fetch_on_startup"`
+		HTTPTimeout      time.Duration `yaml:"http_timeout" json:"http_timeout"`
+		CustomDNSServers []string      `yaml:"custom_dns_servers" json:"custom_dns_servers"`
 	} `yaml:"gfw"`
 }
 
@@ -355,13 +356,16 @@ func (h *Handler) handleUI(w http.ResponseWriter, r *http.Request) {
 
     <!-- GFW Tab -->
     <div id="panel-gfw" class="panel">
-      <div class="card">
-        <h3>GFW List Configuration</h3>
-        <div class="form-row">
-          <label>Source URL</label>
-          <input id="gfw-url" style="flex:3" placeholder="https://github.com/gfwlist/gfwlist/raw/refs/heads/master/gfwlist.txt">
-          <button class="btn btn-secondary" onclick="saveGFWUrl()">Save URL</button>
-        </div>
+        <div class="card">
+          <h3>GFW List Configuration</h3>
+         <div class="form-row">
+           <label><input type="checkbox" id="gfw-enabled" onchange="saveGFWEnabled()"> Enable GFW</label>
+         </div>
+          <div class="form-row">
+           <label>Source URL</label>
+           <input id="gfw-url" style="flex:3" placeholder="https://github.com/gfwlist/gfwlist/raw/refs/heads/master/gfwlist.txt">
+           <button class="btn btn-secondary" onclick="saveGFWUrl()">Save URL</button>
+         </div>
         <div class="form-row">
           <button class="btn btn-primary" onclick="fetchGFW()" id="gfw-fetch-btn">Fetch Now</button>
           <span id="gfw-msg"></span>
@@ -515,6 +519,46 @@ func (h *Handler) handleUI(w http.ResponseWriter, r *http.Request) {
               Enable URL-glob rules
             </label>
           </div>
+          <div class="form-row">
+            <label>
+              <input type="checkbox" id="enable-dns-cache">
+              Enable DNS Cache
+            </label>
+          </div>
+          <div class="form-row">
+            <label>DNS Max Entries</label>
+            <input id="dns-max-entries" type="number" min="1">
+          </div>
+          <div class="form-row">
+            <label>DNS TTL</label>
+            <input id="dns-ttl" placeholder="5m">
+          </div>
+          <div class="form-row">
+            <label>
+              <input type="checkbox" id="cache-enabled">
+              Enable Rule Cache
+            </label>
+          </div>
+          <div class="form-row">
+            <label>Cache Max Size</label>
+            <input id="cache-max-size" type="number" min="1">
+          </div>
+          <div class="form-row">
+            <label>Cache TTL</label>
+            <input id="cache-ttl" placeholder="10m">
+          </div>
+          <div class="form-row">
+            <label>Local IP</label>
+            <input id="local-ip" placeholder="auto">
+          </div>
+          <div class="form-row">
+            <label>DNS Timeout</label>
+            <input id="dns-timeout" placeholder="500ms">
+          </div>
+          <div class="form-row">
+            <label>Eval Timeout</label>
+            <input id="eval-timeout" placeholder="200ms">
+          </div>
           <p class="hint">When enabled, rules using URL pattern matching (url_glob) are included in the generated PAC. Note: URL-glob is ineffective in CONNECT mode because the full URL is not available.</p>
         </div>
 
@@ -550,9 +594,16 @@ let gfwRules = [];
          DIRECT: "Direct connection (no proxy)",
          SOCKS5: "Route through SOCKS5 upstream proxy"
        }
-     };
+      };
 
-     function switchTab(name) {
+      // formatDuration converts time.Duration string (from API) to a user-friendly format
+      function formatDuration(d) {
+        if (!d) return '';
+        // d is like "500ms", "5m", "200ms", "24h"
+        return String(d);
+      }
+
+      function switchTab(name) {
        document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
        document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
        document.getElementById('panel-' + name).classList.add('active');
@@ -948,30 +999,51 @@ let gfwRules = [];
        }
      }
 
-     async function loadGFWStatus() {
-       const res = await fetch('/api/gfw/status');
-       const data = await res.json();
-       const el = document.getElementById('gfw-status');
-       if (!data.configured) {
-         el.innerHTML = '<span class="status-line">GFW fetcher not configured.</span>';
-         return;
-       }
-       el.innerHTML =
-         '<div class="status-line">Configured: <strong>Yes</strong></div>' +
-         '<div class="status-line">Last fetch: ' + (data.lastFetch ? new Date(data.lastFetch).toLocaleString() : 'Never') + '</div>' +
-         '<div class="status-line">Rules: <strong>' + (data.ruleCount || 0) + '</strong></div>' +
-         (data.lastError ? '<div class="status-line error">Error: ' + escHtml(data.lastError) + '</div>' : '') +
-         (data.etag ? '<div class="status-line">ETag: ' + escHtml(data.etag) + '</div>' : '');
-     }
+      async function loadGFWStatus() {
+        const res = await fetch('/api/gfw/status');
+        const data = await res.json();
+        const el = document.getElementById('gfw-status');
+        if (!data.configured) {
+          el.innerHTML = '<span class="status-line">GFW fetcher not configured.</span>';
+          return;
+        }
+        el.innerHTML =
+          '<div class="status-line">Enabled: <strong>' + (data.enabled ? 'Yes' : 'No') + '</strong></div>' +
+          '<div class="status-line">Configured: <strong>Yes</strong></div>' +
+          '<div class="status-line">Last fetch: ' + (data.lastFetch ? new Date(data.lastFetch).toLocaleString() : 'Never') + '</div>' +
+          '<div class="status-line">Rules: <strong>' + (data.ruleCount || 0) + '</strong></div>' +
+          (data.lastError ? '<div class="status-line error">Error: ' + escHtml(data.lastError) + '</div>' : '') +
+          (data.etag ? '<div class="status-line">ETag: ' + escHtml(data.etag) + '</div>' : '');
+      }
 
-     async function saveGFWUrl() {
-       const url = document.getElementById('gfw-url').value;
-       const res = await fetch('/api/gfw/config', { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify({sourceURL: url}) });
-       const msg = document.getElementById('gfw-msg');
-       msg.innerHTML = res.ok ? '<span class="success">Saved</span>' : '<span class="error">Failed</span>';
-     }
+      async function saveGFWUrl() {
+        const url = document.getElementById('gfw-url').value;
+        const res = await fetch('/api/gfw/config', { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify({sourceURL: url}) });
+        const msg = document.getElementById('gfw-msg');
+        msg.innerHTML = res.ok ? '<span class="success">Saved</span>' : '<span class="error">Failed</span>';
+      }
 
-     async function fetchGFW() {
+      function saveGFWEnabled() {
+        const enabled = document.getElementById('gfw-enabled').checked;
+        fetch('/api/gfw/config', {
+          method: 'PUT',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({ enabled: enabled })
+        })
+        .then(r => r.json())
+        .then(() => {
+          // Update disabled state of URL input and fetch button
+          const disabled = !enabled;
+          document.getElementById('gfw-url').disabled = disabled;
+          document.getElementById('gfw-fetch-btn').disabled = disabled;
+          loadGFWStatus();
+        })
+        .catch(err => {
+          console.error('Failed to save GFW enabled:', err);
+        });
+      }
+
+      async function fetchGFW() {
        const btn = document.getElementById('gfw-fetch-btn');
        const msg = document.getElementById('gfw-msg');
        btn.disabled = true;
@@ -1155,37 +1227,57 @@ let gfwRules = [];
           .catch(e => alert('Error: ' + e.message));
       }
 
-        function loadConfig() {
-          // Load main proxy config
-          fetch('/api/config').then(r => r.json()).then(cfg => {
-            currentDefaultProxy = cfg.default_external_proxy || '';
-            document.getElementById('default-proxy-select').value = currentDefaultProxy;
-            if (document.getElementById('http-listen')) document.getElementById('http-listen').value = cfg.http_listen || '';
-            if (document.getElementById('socks5-listen')) document.getElementById('socks5-listen').value = cfg.socks5_listen || '';
-            if (document.getElementById('admin-listen')) document.getElementById('admin-listen').value = cfg.admin_listen || '';
-            if (document.getElementById('https-listen')) document.getElementById('https-listen').value = cfg.https_listen || '';
-            if (document.getElementById('pac-path')) document.getElementById('pac-path').value = cfg.pac_path || '';
-            if (document.getElementById('tun-device')) document.getElementById('tun-device').value = cfg.tun_device || '';
-            // TLS fields
-            if (document.getElementById('tls-certificate')) document.getElementById('tls-certificate').value = cfg.tls?.certificate_file || '';
-            if (document.getElementById('tls-key')) document.getElementById('tls-key').value = cfg.tls?.key_file || '';
-            if (document.getElementById('tls-ca')) document.getElementById('tls-ca').value = cfg.tls?.ca_file || '';
-            if (document.getElementById('tls-client-auth')) document.getElementById('tls-client-auth').value = cfg.tls?.client_auth || '';
-            // Enable URL-glob checkbox
-            if (document.getElementById('enable-url-glob')) {
-                document.getElementById('enable-url-glob').checked = cfg.enable_url_glob || false;
-            }
-            window.configEnableURLGlob = !!cfg.enable_url_glob;
-          }).catch(err => {
-            console.error('Failed to load config:', err);
-          });
+         function loadConfig() {
+           // Load main proxy config
+           fetch('/api/config').then(r => r.json()).then(cfg => {
+             currentDefaultProxy = cfg.default_external_proxy || '';
+             document.getElementById('default-proxy-select').value = currentDefaultProxy;
+             if (document.getElementById('http-listen')) document.getElementById('http-listen').value = cfg.http_listen || '';
+             if (document.getElementById('socks5-listen')) document.getElementById('socks5-listen').value = cfg.socks5_listen || '';
+             if (document.getElementById('admin-listen')) document.getElementById('admin-listen').value = cfg.admin_listen || '';
+             if (document.getElementById('https-listen')) document.getElementById('https-listen').value = cfg.https_listen || '';
+             if (document.getElementById('pac-path')) document.getElementById('pac-path').value = cfg.pac_path || '';
+             if (document.getElementById('tun-device')) document.getElementById('tun-device').value = cfg.tun_device || '';
+             // TLS fields
+             if (document.getElementById('tls-certificate')) document.getElementById('tls-certificate').value = cfg.tls?.certificate_file || '';
+             if (document.getElementById('tls-key')) document.getElementById('tls-key').value = cfg.tls?.key_file || '';
+             if (document.getElementById('tls-ca')) document.getElementById('tls-ca').value = cfg.tls?.ca_file || '';
+             if (document.getElementById('tls-client-auth')) document.getElementById('tls-client-auth').value = cfg.tls?.client_auth || '';
+             
+              // PAC settings
+              if (document.getElementById('local-ip')) document.getElementById('local-ip').value = cfg.pac?.local_ip || '';
+              if (document.getElementById('dns-timeout')) document.getElementById('dns-timeout').value = formatDuration(cfg.pac?.dns_timeout);
+              if (document.getElementById('eval-timeout')) document.getElementById('eval-timeout').value = formatDuration(cfg.pac?.eval_timeout);
+              if (document.getElementById('enable-dns-cache')) document.getElementById('enable-dns-cache').checked = cfg.pac?.enable_dns_cache || false;
+              if (document.getElementById('dns-max-entries')) document.getElementById('dns-max-entries').value = cfg.pac?.dns_max_entries || 100;
+             if (document.getElementById('dns-ttl')) document.getElementById('dns-ttl').value = formatDuration(cfg.pac?.dns_ttl);
+             if (document.getElementById('cache-enabled')) document.getElementById('cache-enabled').checked = cfg.pac?.cache_enabled || false;
+             if (document.getElementById('cache-max-size')) document.getElementById('cache-max-size').value = cfg.pac?.cache_max_size || 10000;
+             if (document.getElementById('cache-ttl')) document.getElementById('cache-ttl').value = formatDuration(cfg.pac?.cache_ttl);
+             
+             // URL-glob
+             if (document.getElementById('enable-url-glob')) {
+                 document.getElementById('enable-url-glob').checked = cfg.pac?.enable_url_glob || false;
+             }
+             window.configEnableURLGlob = !!cfg.pac?.enable_url_glob;
+           }).catch(err => {
+             console.error('Failed to load config:', err);
+           });
 
-          // Load GFW config to show source URL
+          // Load GFW config to show source URL and enabled state
           fetch('/api/gfw/config')
             .then(r => r.json())
             .then(data => {
               if (document.getElementById('gfw-url')) {
                 document.getElementById('gfw-url').value = data.sourceURL || '';
+              }
+              const cb = document.getElementById('gfw-enabled');
+              if (cb) {
+                cb.checked = data.enabled;
+                // Disable URL and fetch button if disabled
+                const disabled = !data.enabled;
+                document.getElementById('gfw-url').disabled = disabled;
+                document.getElementById('gfw-fetch-btn').disabled = disabled;
               }
             })
             .catch(err => {
@@ -1193,33 +1285,45 @@ let gfwRules = [];
             });
         }
 
-       function saveConfig() {
-         const payload = {
-           default_external_proxy: document.getElementById('default-proxy-select').value,
-           http_listen: document.getElementById('http-listen').value,
-           socks5_listen: document.getElementById('socks5-listen').value,
-           admin_listen: document.getElementById('admin-listen').value,
-           https_listen: document.getElementById('https-listen').value,
-           pac_path: document.getElementById('pac-path').value,
-           tun_device: document.getElementById('tun-device').value,
-           tls: {
-             certificate_file: document.getElementById('tls-certificate').value,
-             key_file: document.getElementById('tls-key').value,
-             ca_file: document.getElementById('tls-ca').value,
-             client_auth: document.getElementById('tls-client-auth').value
-           }
-         };
-         fetch('/api/config', {
-           method: 'PUT',
-           headers: {'Content-Type': 'application/json'},
-           body: JSON.stringify(payload)
-         })
-         .then(r => r.json())
-         .then(data => {
-           alert('Config saved' + (data.restart_required ? ' (restart required for listeners/TLS)' : ''));
-         })
-         .catch(e => alert('Error: ' + e.message));
-       }
+        function saveConfig() {
+          const payload = {
+            default_external_proxy: document.getElementById('default-proxy-select').value,
+            http_listen: document.getElementById('http-listen').value,
+            socks5_listen: document.getElementById('socks5-listen').value,
+            admin_listen: document.getElementById('admin-listen').value,
+            https_listen: document.getElementById('https-listen').value,
+            pac_path: document.getElementById('pac-path').value,
+            tun_device: document.getElementById('tun-device').value,
+            tls: {
+              certificate_file: document.getElementById('tls-certificate').value,
+              key_file: document.getElementById('tls-key').value,
+              ca_file: document.getElementById('tls-ca').value,
+              client_auth: document.getElementById('tls-client-auth').value
+            },
+            pac: {
+              local_ip: document.getElementById('local-ip').value,
+              dns_timeout: document.getElementById('dns-timeout').value,
+              eval_timeout: document.getElementById('eval-timeout').value,
+              enable_dns_cache: document.getElementById('enable-dns-cache').checked,
+              dns_max_entries: parseInt(document.getElementById('dns-max-entries').value, 10),
+              dns_ttl: document.getElementById('dns-ttl').value,
+              cache_enabled: document.getElementById('cache-enabled').checked,
+              cache_max_size: parseInt(document.getElementById('cache-max-size').value, 10),
+              cache_ttl: document.getElementById('cache-ttl').value,
+              enable_url_glob: document.getElementById('enable-url-glob').checked
+            }
+          };
+          fetch('/api/config', {
+            method: 'PUT',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(payload)
+          })
+          .then(r => r.json())
+          .then(data => {
+            alert('Config saved' + (data.restart_required ? ' (restart required for listeners/TLS)' : ''));
+          })
+          .catch(e => alert('Error: ' + e.message));
+        }
        
        function updateRouteOptions() {
         const base = ['DIRECT','TUN','DEFAULT','SOCKS5 127.0.0.1:1080'];
@@ -1295,14 +1399,16 @@ let gfwRules = [];
        }
       
       setInterval(loadStatus, 5000);
-     setInterval(function() {
-       if (document.getElementById('panel-connections').classList.contains('active')) {
-         loadConnections();
-       }
-     }, 2000);
-     
-     // Initialize GFW checkbox on page load
-      document.addEventListener('DOMContentLoaded', initGFWCheckbox);
+      setInterval(function() {
+        if (document.getElementById('panel-connections').classList.contains('active')) {
+          loadConnections();
+        }
+      }, 2000);
+      
+      // Initialize UI state on load
+      initGFWCheckbox();
+      loadConfig();
+      
       // Show/hide URL-glob warning based on settings
       document.getElementById('new-match').addEventListener('change', function() {
         var warning = document.getElementById('url-glob-warning');
@@ -1735,6 +1841,19 @@ func (h *Handler) handleGFWStatus(w http.ResponseWriter, r *http.Request) {
 		resp["etag"] = status.ETag
 	}
 
+	// Determine enabled flag from config
+	enabled := true // default (disabled false)
+	if h.configPath != "" {
+		data, err := os.ReadFile(h.configPath)
+		if err == nil {
+			var cfg FullConfig
+			if err := yaml.Unmarshal(data, &cfg); err == nil {
+				enabled = !cfg.GFW.Disabled
+			}
+		}
+	}
+	resp["enabled"] = enabled
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(resp)
 }
@@ -1747,6 +1866,12 @@ func (h *Handler) handleGWFFetch(w http.ResponseWriter, r *http.Request) {
 	}
 	if h.fetcher == nil {
 		http.Error(w, "GFW fetcher not configured", http.StatusServiceUnavailable)
+		return
+	}
+	if h.fetcher.IsDisabled() {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusForbidden)
+		json.NewEncoder(w).Encode(map[string]string{"error": "GFW fetching disabled"})
 		return
 	}
 
@@ -1790,12 +1915,23 @@ func (h *Handler) handleGetGFWConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Load full config to get Disabled and other persisted values
+	data, err := os.ReadFile(h.configPath)
+	var cfg FullConfig
+	if err == nil {
+		yaml.Unmarshal(data, &cfg)
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"configured": true,
-		"sourceURL":  h.fetcher.SourceURL,
-		"localPath":  h.fetcher.LocalPath,
-		"userPath":   h.userPath,
+		"configured":     true,
+		"enabled":        !cfg.GFW.Disabled, // send enabled for UI convenience
+		"sourceURL":      h.fetcher.SourceURL,
+		"localRulesPath": h.gfwPath,
+		"userRulesPath":  h.userPath,
+		"fetchOnStartup": cfg.GFW.FetchOnStartup,
+		"updateInterval": cfg.GFW.UpdateInterval,
+		// could also include other fields if needed
 	})
 }
 
@@ -1806,52 +1942,76 @@ func (h *Handler) handlePutGFWConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Load current config to get current disabled state
+	data, err := os.ReadFile(h.configPath)
+	if err != nil {
+		http.Error(w, "Failed to read config", http.StatusInternalServerError)
+		return
+	}
+	var cfg FullConfig
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
+		http.Error(w, "Failed to parse config", http.StatusInternalServerError)
+		return
+	}
+
 	var req struct {
 		SourceURL string `json:"sourceURL"`
+		Disabled  *bool  `json:"disabled"`
+		Enabled   *bool  `json:"enabled"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "Invalid JSON", http.StatusBadRequest)
 		return
 	}
 
-	if req.SourceURL == "" {
-		http.Error(w, "sourceURL is required", http.StatusBadRequest)
+	// Merge changes
+	changed := false
+	if req.SourceURL != "" && req.SourceURL != h.fetcher.SourceURL {
+		h.fetcher.SourceURL = req.SourceURL
+		cfg.GFW.SourceURL = req.SourceURL
+		changed = true
+	}
+
+	currentDisabled := cfg.GFW.Disabled
+	newDisabled := currentDisabled
+	if req.Enabled != nil {
+		newDisabled = !*req.Enabled
+	}
+	if req.Disabled != nil {
+		newDisabled = *req.Disabled
+	}
+
+	if newDisabled != currentDisabled {
+		h.fetcher.SetDisabled(newDisabled)
+		cfg.GFW.Disabled = newDisabled
+		changed = true
+	}
+
+	if !changed {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 		return
 	}
 
-	// Update in-memory fetcher
-	h.fetcher.SourceURL = req.SourceURL
-
-	// Persist to config file if we know the path
-	if h.configPath != "" {
-		// Read existing config
-		data, err := os.ReadFile(h.configPath)
-		if err != nil {
-			log.Printf("[Admin] Failed to read config for update: %v", err)
-		} else {
-			var cfg FullConfig
-			if err := yaml.Unmarshal(data, &cfg); err != nil {
-				log.Printf("[Admin] Failed to parse config for update: %v", err)
-			} else {
-				cfg.GFW.SourceURL = req.SourceURL
-				out, err := yaml.Marshal(&cfg)
-				if err != nil {
-					log.Printf("[Admin] Failed to marshal config: %v", err)
-				} else {
-					// Write atomically
-					tmpPath := h.configPath + ".tmp"
-					if err := os.WriteFile(tmpPath, out, 0o644); err != nil {
-						log.Printf("[Admin] Failed to write config tmp: %v", err)
-					} else if err := os.Rename(tmpPath, h.configPath); err != nil {
-						os.Remove(tmpPath)
-						log.Printf("[Admin] Failed to rename config: %v", err)
-					} else {
-						log.Printf("[Admin] Updated GFW source_url in config: %s", req.SourceURL)
-					}
-				}
-			}
-		}
+	// Persist updated config
+	out, err := yaml.Marshal(&cfg)
+	if err != nil {
+		http.Error(w, "Failed to marshal config", http.StatusInternalServerError)
+		return
 	}
+	tmpPath := h.configPath + ".tmp"
+	if err := os.WriteFile(tmpPath, out, 0o644); err != nil {
+		http.Error(w, "Failed to write config tmp", http.StatusInternalServerError)
+		return
+	}
+	if err := os.Rename(tmpPath, h.configPath); err != nil {
+		os.Remove(tmpPath)
+		http.Error(w, "Failed to rename config", http.StatusInternalServerError)
+		return
+	}
+
+	// Regenerate PAC immediately
+	h.regeneratePAC()
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
@@ -1862,18 +2022,20 @@ func (h *Handler) regeneratePAC() {
 	if h.userPath == "" || h.gfwPath == "" || h.pacPath == "" {
 		return
 	}
-	// Read config to get EnableURLGlob
+	// Read config to get EnableURLGlob and GFW enabled state
 	enableURLGlob := false
+	enabled := true // default
 	if h.configPath != "" {
 		data, err := os.ReadFile(h.configPath)
 		if err == nil {
 			var cfg FullConfig
 			if err := yaml.Unmarshal(data, &cfg); err == nil {
 				enableURLGlob = cfg.PAC.EnableURLGlob
+				enabled = !cfg.GFW.Disabled
 			}
 		}
 	}
-	if err := gfw.RegeneratePAC(h.userPath, h.gfwPath, h.pacPath, h.defaultExternalProxy, enableURLGlob); err != nil {
+	if err := gfw.RegeneratePAC(h.userPath, h.gfwPath, h.pacPath, h.defaultExternalProxy, enableURLGlob, enabled); err != nil {
 		log.Printf("[Admin] PAC regeneration failed: %v", err)
 	}
 }
@@ -2203,8 +2365,19 @@ func (h *Handler) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 		PACPath              string `json:"pac_path"`
 		TUNDevice            string `json:"tun_device"`
 		DefaultExternalProxy string `json:"default_external_proxy"`
-		EnableURLGlob        bool   `json:"enable_url_glob"`
-		TLS                  struct {
+		PAC                  struct {
+			LocalIP        string `json:"local_ip"`
+			DNSTimeout     string `json:"dns_timeout"`
+			EvalTimeout    string `json:"eval_timeout"`
+			EnableDNSCache bool   `json:"enable_dns_cache"`
+			DNSMaxEntries  int    `json:"dns_max_entries"`
+			DNSTTL         string `json:"dns_ttl"`
+			CacheEnabled   bool   `json:"cache_enabled"`
+			CacheMaxSize   int    `json:"cache_max_size"`
+			CacheTTL       string `json:"cache_ttl"`
+			EnableURLGlob  bool   `json:"enable_url_glob"`
+		} `json:"pac"`
+		TLS struct {
 			CertificateFile string `json:"certificate_file"`
 			KeyFile         string `json:"key_file"`
 			CAFile          string `json:"ca_file"`
@@ -2216,7 +2389,7 @@ func (h *Handler) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 		AdminListen:  status.AdminListen,
 		HTTPSListen:  status.HTTPSListen, // Use status if available, else from config
 	}
-	// Read config file to get PACPath, TUNDevice, DefaultExternalProxy, HTTPSListen, TLS, EnableURLGlob
+	// Read config file to get all settings
 	data, err := os.ReadFile(h.configPath)
 	if err == nil {
 		var full FullConfig
@@ -2225,7 +2398,16 @@ func (h *Handler) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 			cfg.TUNDevice = full.Proxy.TUNDevice
 			cfg.DefaultExternalProxy = full.Proxy.DefaultExternalProxy
 			cfg.HTTPSListen = full.Proxy.HTTPSListen
-			cfg.EnableURLGlob = full.PAC.EnableURLGlob
+			cfg.PAC.LocalIP = full.PAC.LocalIP
+			cfg.PAC.DNSTimeout = full.PAC.DNSTimeout.String()
+			cfg.PAC.EvalTimeout = full.PAC.EvalTimeout.String()
+			cfg.PAC.EnableDNSCache = full.PAC.EnableDNSCache
+			cfg.PAC.DNSMaxEntries = full.PAC.DNSMaxEntries
+			cfg.PAC.DNSTTL = full.PAC.DNSTTL.String()
+			cfg.PAC.CacheEnabled = full.PAC.CacheEnabled
+			cfg.PAC.CacheMaxSize = full.PAC.CacheMaxSize
+			cfg.PAC.CacheTTL = full.PAC.CacheTTL.String()
+			cfg.PAC.EnableURLGlob = full.PAC.EnableURLGlob
 			cfg.TLS.CertificateFile = full.Proxy.TLS.CertificateFile
 			cfg.TLS.KeyFile = full.Proxy.TLS.KeyFile
 			cfg.TLS.CAFile = full.Proxy.TLS.CAFile
@@ -2247,7 +2429,18 @@ func (h *Handler) handlePutConfig(w http.ResponseWriter, r *http.Request) {
 		TUNDevice            string `json:"tun_device"`
 		DefaultExternalProxy string `json:"default_external_proxy"`
 		EnableURLGlob        bool   `json:"enable_url_glob"`
-		TLS                  struct {
+		PAC                  struct {
+			LocalIP        string `json:"local_ip"`
+			DNSTimeout     string `json:"dns_timeout"` // duration string
+			EvalTimeout    string `json:"eval_timeout"`
+			EnableDNSCache bool   `json:"enable_dns_cache"`
+			DNSMaxEntries  int    `json:"dns_max_entries"`
+			DNSTTL         string `json:"dns_ttl"`
+			CacheEnabled   bool   `json:"cache_enabled"`
+			CacheMaxSize   int    `json:"cache_max_size"`
+			CacheTTL       string `json:"cache_ttl"`
+		} `json:"pac"`
+		TLS struct {
 			CertificateFile string `json:"certificate_file"`
 			KeyFile         string `json:"key_file"`
 			CAFile          string `json:"ca_file"`
@@ -2322,6 +2515,60 @@ func (h *Handler) handlePutConfig(w http.ResponseWriter, r *http.Request) {
 	if upd.EnableURLGlob != cfg.PAC.EnableURLGlob {
 		cfg.PAC.EnableURLGlob = upd.EnableURLGlob
 		needRegen = true
+	}
+
+	// Handle other PAC fields
+	if upd.PAC.LocalIP != "" && upd.PAC.LocalIP != cfg.PAC.LocalIP {
+		cfg.PAC.LocalIP = upd.PAC.LocalIP
+		needRegen = true
+	}
+	if upd.PAC.DNSTimeout != "" {
+		if d, err := time.ParseDuration(upd.PAC.DNSTimeout); err == nil {
+			if d != cfg.PAC.DNSTimeout {
+				cfg.PAC.DNSTimeout = d
+				needRegen = true
+			}
+		}
+	}
+	if upd.PAC.EvalTimeout != "" {
+		if d, err := time.ParseDuration(upd.PAC.EvalTimeout); err == nil {
+			if d != cfg.PAC.EvalTimeout {
+				cfg.PAC.EvalTimeout = d
+				needRegen = true
+			}
+		}
+	}
+	if upd.PAC.EnableDNSCache != cfg.PAC.EnableDNSCache {
+		cfg.PAC.EnableDNSCache = upd.PAC.EnableDNSCache
+		needRegen = true
+	}
+	if upd.PAC.DNSMaxEntries != 0 && upd.PAC.DNSMaxEntries != cfg.PAC.DNSMaxEntries {
+		cfg.PAC.DNSMaxEntries = upd.PAC.DNSMaxEntries
+		needRegen = true
+	}
+	if upd.PAC.DNSTTL != "" {
+		if d, err := time.ParseDuration(upd.PAC.DNSTTL); err == nil {
+			if d != cfg.PAC.DNSTTL {
+				cfg.PAC.DNSTTL = d
+				needRegen = true
+			}
+		}
+	}
+	if upd.PAC.CacheEnabled != cfg.PAC.CacheEnabled {
+		cfg.PAC.CacheEnabled = upd.PAC.CacheEnabled
+		needRegen = true
+	}
+	if upd.PAC.CacheMaxSize != 0 && upd.PAC.CacheMaxSize != cfg.PAC.CacheMaxSize {
+		cfg.PAC.CacheMaxSize = upd.PAC.CacheMaxSize
+		needRegen = true
+	}
+	if upd.PAC.CacheTTL != "" {
+		if d, err := time.ParseDuration(upd.PAC.CacheTTL); err == nil {
+			if d != cfg.PAC.CacheTTL {
+				cfg.PAC.CacheTTL = d
+				needRegen = true
+			}
+		}
 	}
 
 	// Write updated config

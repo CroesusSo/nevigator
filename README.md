@@ -120,6 +120,24 @@ Open `http://localhost:9090` in browser to:
 - **Proxies tab**: manage external SOCKS5 proxies, set default, test connectivity
 - **Settings tab**: view and edit listening addresses, PAC path, and TUN device
 
+## GFW List Integration
+
+The proxy can optionally fetch and merge rules from the GFWlist. Configure under `gfw:` in config.yaml:
+
+```yaml
+gfw:
+  disabled: false          # Set true to disable fetching and inclusion (default false)
+  source_url: "https://..."
+  local_rules_path: "..."
+  user_rules_path: "..."
+  fetch_on_startup: true
+  update_interval: 24h
+  http_timeout: 60s
+```
+
+- **disabled**: When true, the fetcher will not perform any fetches (startup, periodic, manual) and the PAC generator will exclude GFW rules. The feature can be toggled at runtime via the Admin UI (GFW tab).
+- The Admin UI also allows manual fetching and displays status (enabled/disabled, last fetch, rule count).
+
 ## PAC Script Format
 
 **Important:** This proxy uses a **native rule engine only** — it does **not** execute arbitrary JavaScript PAC functions. PAC files must contain a special `__PAC_RULES__` JSON variable with structured rules. The `FindProxyForURL` function is required but ignored; it's just a placeholder to maintain compatibility with the PAC file format.

@@ -4,10 +4,15 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"gopkg.in/yaml.v3"
+
+	"github.com/yourorg/proxy-pac/gfw"
 	"github.com/yourorg/proxy-pac/status"
 )
 
@@ -284,7 +289,94 @@ func TestValidateProxyAddress(t *testing.T) {
 		} else {
 			if err != nil {
 				t.Errorf("validateProxyAddress(%s) expected no error, got %v", c.addr, err)
-			}
 		}
+	}
+}
+
+
+func TestHandlePutGFWConfig_ToggleDisabled(t *testing.T) {
+	// Setup temp directory and files
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.yaml")
+	userRulesPath := filepath.Join(dir, "user-rules.json")
+	gfwRulesPath := filepath.Join(dir, "gfw-rules.json")
+	pacPath := filepath.Join(dir, "proxy.pac")
+
+	// Create initial config with GFW disabled: false
+	cfgYAML := `proxy:
+  http_listen: ":8080"
+  socks5_listen: ":1080"
+  admin_listen: "127.0.0.1:9090"
+  pac_path: "` + pacPath + `"
+  default_external_proxy: ""
+
+pac:
+  enable_url_glob: false
+
+gfw:
+  disabled: false
+  source_url: "http://example.com/gfwlist.txt"
+  user_rules_path: "` + userRulesPath + `"
+  local_rules_path: "` + gfwRulesPath + `"
+  fetch_on_startup: false
+  update_interval: 24h
+  http_timeout: 10s
+`
+	if err := os.WriteFile(cfgPath, []byte(cfgYAML), 0644); err != nil {
+		t.Fatal(err)
+	}
+	// Create empty rule files
+	os.WriteFile(userRulesPath, []byte("[]"), 0644)
+	os.WriteFile(gfwRulesPath, []byte("[]"), 0644)
+	// Create dummy PAC file
+	os.WriteFile(pacPath, []byte(`function FindProxyForURL(url, host) { return "DIRECT"; }`), 0644)
+
+	// Load full config to get GFW config for fetcher
+	data, err := os.ReadFile(cfgPath)
+	if err != nil { t.Fatal(err) }
+	var full FullConfig
+	if err := yaml.Unmarshal(data, &full); err != nil { t.Fatal(err) }
+
+	// Create real fetcher
+	fetcher, err := gfw.NewFetcher(full.GFW)
+	if err != nil { t.Fatal(err) }
+	fetcher.SetDisabled(full.GFW.Disabled)
+
+	// Construct handler with minimal fields
+	h := &Handler{
+		configPath:           cfgPath,
+		fetcher:              fetcher,
+		userPath:             full.GFW.UserRulesPath,
+		gfwPath:              full.GFW.LocalRulesPath,
+		pacPath:              full.Proxy.PACPath,
+		defaultExternalProxy: full.Proxy.DefaultExternalProxy,
+	}
+
+	// Send PUT request to disable GFW
+	reqBody := `{"disabled": true}`
+	req := httptest.NewRequest(http.MethodPut, "/api/gfw/config", strings.NewReader(reqBody))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	h.handleGFWConfig(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status code = %d, want %d", w.Code, http.StatusOK)
+	}
+
+	// Verify config file updated
+	data, err = os.ReadFile(cfgPath)
+	if err != nil { t.Fatal(err) }
+	var updated FullConfig
+	if err := yaml.Unmarshal(data, &updated); err != nil {
+		t.Fatalf("parse updated config: %v", err)
+	}
+	if updated.GFW.Disabled != true {
+		t.Errorf("GFW.Disabled = %v, want true", updated.GFW.Disabled)
+	}
+
+	// Verify fetcher state updated
+	if !fetcher.IsDisabled() {
+		t.Error("fetcher.IsDisabled() = false, want true")
 	}
 }

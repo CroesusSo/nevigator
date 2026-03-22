@@ -90,11 +90,11 @@ The `FindProxyForURL` function is **ignored**; it exists only to satisfy legacy 
 - `match`: match type — `exact`, `domain_suffix`, `host_glob` (URL-glob not supported)
 - `value`: pattern to match (exact hostname, leading dot for suffix, `*` wildcards for host glob)
 - `route`: routing decision — `"TUN"`, `"SOCKS5 host:port"`, `"EXTERNAL <id>"`, `"DEFAULT"`, `"DIRECT"`
-- `enabled`: boolean (default true)
+ - `enabled`: boolean (default true)
 
-Rules are evaluated in order of ascending `id` (user-defined order) unless `deepest_match: true` is configured, which changes semantics for suffix and host glob:
-- Suffix: longest matching suffix wins (most specific)
-- Host glob: sorted by specificity score (longer, fewer wildcards first), index as tie-breaker
+Rules are evaluated in ascending `id` order. The native engine always uses deepest match semantics:
+- For `domain_suffix`: the longest matching suffix wins (most specific)
+- For `host_glob`: patterns are internally sorted by specificity (longer, fewer wildcards first), with `id` as tie-breaker
 
 ### Example PAC Generation
 
@@ -112,20 +112,14 @@ proxy:
   default_external_proxy: ""
   external_proxies: []  # list of {id, address, username, password}
 
-pac:
-  deepest_match: false    # use deepest/specific match semantics instead of first-match
-  enable_dns_cache: true  # DNS cache for internal lookups (not used for user PAC)
-  dns_max_entries: 100    # max DNS cache entries (0 = unlimited)
-  dns_ttl: 5m             # DNS cache TTL
-  cache_enabled: true     # enable PAC result caching
-  cache_max_size: 10000   # max cached hosts
-  cache_ttl: 10m          # cache TTL
-
-gfw:
-  source_url: "https://..."
-  fetch_on_startup: true
-  update_interval: 24h
-```
+ pac:
+   enable_dns_cache: true  # DNS cache for internal lookups (not used for user PAC)
+   dns_max_entries: 100    # max DNS cache entries (0 = unlimited)
+   dns_ttl: 5m             # DNS cache TTL
+   cache_enabled: true     # enable PAC result caching
+   cache_max_size: 10000   # max cached hosts
+   cache_ttl: 10m          # cache TTL
+ ```
 
 ## Native Rule Engine
 
