@@ -45,9 +45,10 @@ cmd/proxy-pac/   - Main entrypoint, config loading, component wiring
 pac/             - PAC evaluation engine (core logic)
   config.go      - Config structs: Route, EvaluatorConfig, RouterConfig, ProxyConfig
   evaluator.go   - PAC evaluator with hot-reload via fsnotify
-  builtins.go    - PAC JS builtins: shExpMatch, dnsDomainIs, isInNet, etc.
+  native_engine.go - Native rule engine: unified suffix trie (radix tree) for all match types
   parser.go      - PAC result parsing (FindProxyForURL return values)
   dns.go         - DNS cache and lookup with timeout
+  cache.go       - LRU evaluation cache with TTL
   *_test.go      - Unit tests
 proxy/           - HTTP CONNECT and SOCKS5 proxy server
 router/          - Outbound connection routing (TUN, SOCKS5, DIRECT)
@@ -125,6 +126,7 @@ func NewEvaluator(cfg EvaluatorConfig) (*Evaluator, error) { ... }
 ## Architecture Notes
 
 - PAC evaluation uses a native Go rule engine with sub‑microsecond latency; an LRU cache further reduces overhead
+- Native engine uses a unified reversed-label suffix trie (radix tree) for all match types: exact hosts, domain suffixes, and host globs; earliest rule index wins by default
 - PAC file hot-reload via fsnotify watcher on parent directory
 - Route fallback: if chosen route fails (not DIRECT), automatically retries DIRECT
 - SOCKS5 handshake implemented manually in `router/router.go` and `proxy/server.go`

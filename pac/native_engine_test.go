@@ -51,28 +51,25 @@ func TestRouteFromString(t *testing.T) {
 	}
 }
 
-func TestExactMap(t *testing.T) {
+func TestExactMatches(t *testing.T) {
 	rules := []gfw.Rule{
 		makeRule("example.com", gfw.MatchExact, "TUN", true),
-		makeRule("EXAMPLE.COM:8080", gfw.MatchExact, "SOCKS5 127.0.0.1:1080", true), // duplicate with port
+		makeRule("EXAMPLE.COM:8080", gfw.MatchExact, "SOCKS5 127.0.0.1:1080", true), // duplicate with port, should be ignored
 		makeRule("test.com", gfw.MatchExact, "DIRECT", true),
 	}
 	engine := makeEngineWithRules(rules)
 
-	// exact map should normalize host and strip port
-	got1, ok := engine.exactMap["example.com"]
-	if !ok || got1.route.Strategy != "TUN" {
-		t.Error("expected example.com -> TUN")
+	// Exact match should work via Evaluate (host normalization: lowercase, strip port)
+	if r := engine.Evaluate("example.com"); r.Strategy != "TUN" {
+		t.Errorf("example.com -> %v, want TUN", r)
 	}
-	// duplicate with higher index should not override
-	_, ok = engine.exactMap["example.com"]
-	if !ok {
-		t.Error("example.com should still exist")
+	// Duplicate with port should not override original (first rule wins)
+	if r := engine.Evaluate("EXAMPLE.COM:8080"); r.Strategy != "TUN" {
+		t.Errorf("EXAMPLE.COM:8080 -> %v, want TUN (duplicate should not override)", r)
 	}
 	// test.com
-	got2, ok := engine.exactMap["test.com"]
-	if !ok || got2.route.Strategy != "DIRECT" {
-		t.Error("expected test.com -> DIRECT")
+	if r := engine.Evaluate("test.com"); r.Strategy != "DIRECT" {
+		t.Errorf("test.com -> %v, want DIRECT", r)
 	}
 }
 

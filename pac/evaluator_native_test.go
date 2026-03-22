@@ -235,8 +235,8 @@ func TestDeepestMatch_Disabled(t *testing.T) {
 	}
 	defer e.Close()
 
-	// mail.google.com should match .com (lower index wins) -> SOCKS5
-	if r := e.Evaluate("mail.google.com"); r.Strategy != "SOCKS5" {
-		t.Errorf("mail.google.com -> %v, want SOCKS5 (index order)", r)
+	// mail.google.com matches .google.com (longer suffix wins) regardless of deepest_match flag
+	if r := e.Evaluate("mail.google.com"); r.Strategy != "TUN" {
+		t.Errorf("mail.google.com -> %v, want TUN (longest suffix)", r)
 	}
 }

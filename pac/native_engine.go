@@ -86,7 +86,7 @@ func (t *domainSuffixTrie) insert(pattern string, meta ruleMeta) {
 				}
 				node = node.wildcards_child
 			} else {
-				log.Printf("[WARN] Ignoring middle * rule for %s", pattern, seg)
+				log.Printf("[WARN] Ignoring middle * rule for pattern %s at segment %s", pattern, seg)
 				return
 			}
 		} else if strings.ContainsAny(seg, "*?") {

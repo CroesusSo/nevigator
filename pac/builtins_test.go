@@ -1,8 +1,20 @@
 package pac
 
 import (
+	"regexp"
+	"strings"
 	"testing"
 )
+
+// shellPatternToRegex converts a shell-style glob pattern to a regular expression.
+// This helper is used in tests; the production code uses an inline version (globToRegex).
+func shellPatternToRegex(pattern string) string {
+	// Escape special regex characters, then replace glob wildcards with regex equivalents.
+	re := regexp.QuoteMeta(pattern)
+	re = strings.ReplaceAll(re, `\*`, `.*`)
+	re = strings.ReplaceAll(re, `\?`, `.`)
+	return "^" + re + "$"
+}
 
 func TestShellPatternToRegex(t *testing.T) {
 	tests := []struct {

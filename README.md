@@ -56,10 +56,11 @@ Run:
 
 The proxy uses a native Go rule engine for PAC evaluation. This provides **>100× performance improvement** compared to a JavaScript interpreter, with uncached evaluation in sub‑microseconds. The engine only processes PAC files that contain structured rules in the `__PAC_RULES__` JSON variable.
 
-The engine builds efficient indexes:
-- Exact host map (O(1))
-- Reversed‑label domain suffix trie (O(depth))
-- Deduplicated, ordered host glob patterns
+The engine uses a **unified reversed-label suffix trie** (radix tree) for all match types:
+- Exact host matches are stored as full paths in the trie
+- Domain suffix matches traverse the trie in reverse (e.g., `.google.com` → `com` → `google`)
+- Host glob patterns (`*`, `?`) are compiled to regex and evaluated at the relevant trie node
+- Earliest rule index wins when multiple patterns match (first‑match semantics)
 
 An LRU cache with configurable TTL stores recent host→route results, further reducing latency. Cache statistics are available via `/api/cache` and included in `/api/status`.
 
