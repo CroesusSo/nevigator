@@ -22,6 +22,7 @@ import (
 	"github.com/yourorg/proxy-pac/pac"
 	"github.com/yourorg/proxy-pac/router"
 	"github.com/yourorg/proxy-pac/socks5"
+	"github.com/yourorg/proxy-pac/ssh"
 	"github.com/yourorg/proxy-pac/status"
 )
 
@@ -1072,11 +1073,18 @@ func (h *Handler) handleTestProxyByID(w http.ResponseWriter, r *http.Request, id
 }
 
 // handleTestProxy tests an arbitrary unsaved proxy configuration.
+// Supports both SOCKS5 (default) and SSH (when kind: "ssh") proxies.
 func (h *Handler) handleTestProxy(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Address  string `json:"address"`
-		Username string `json:"username"`
-		Password string `json:"password"`
+		Address            string `json:"address"`
+		Username           string `json:"username"`
+		Password           string `json:"password"`
+		Kind               string `json:"kind"`
+		AuthMethod         string `json:"auth_method"`
+		PrivateKeyPath     string `json:"private_key_path"`
+		SSHPort            int    `json:"ssh_port"`
+		HostKeyCheck       string `json:"host_key_check"`
+		HostKeyFingerprint string `json:"host_key_fingerprint"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "Invalid JSON", http.StatusBadRequest)
@@ -1086,13 +1094,82 @@ func (h *Handler) handleTestProxy(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "address required", http.StatusBadRequest)
 		return
 	}
+
+	// Default to SOCKS5 if kind not specified (backward compatibility)
+	if req.Kind == "" {
+		req.Kind = "socks5"
+	}
+
 	timeout := 5 * time.Second
+
+	// SSH proxy test
+	if req.Kind == "ssh" {
+		// Validate required SSH fields
+		if req.AuthMethod == "" {
+			http.Error(w, "auth_method required for SSH proxy", http.StatusBadRequest)
+			return
+		}
+		if req.AuthMethod == "key" && req.PrivateKeyPath == "" {
+			http.Error(w, "private_key_path required for key auth", http.StatusBadRequest)
+			return
+		}
+		if req.AuthMethod == "password" && req.Password == "" {
+			http.Error(w, "password required for password auth", http.StatusBadRequest)
+			return
+		}
+
+		// Normalize host_key_check (default: strict)
+		hostKeyCheck := req.HostKeyCheck
+		if hostKeyCheck != "ignore" {
+			hostKeyCheck = "strict"
+		}
+
+		// Build temporary proxy config for test
+		proxy := pac.ExternalProxy{
+			ID:                 "test-unsaved",
+			Kind:               "ssh",
+			Address:            req.Address,
+			Username:           req.Username,
+			Password:           req.Password,
+			SSHPort:            req.SSHPort,
+			AuthMethod:         req.AuthMethod,
+			PrivateKeyPath:     req.PrivateKeyPath,
+			HostKeyCheck:       hostKeyCheck,
+			HostKeyFingerprint: req.HostKeyFingerprint,
+		}
+
+		// Create temporary tunnel (not managed by tunnel manager)
+		tunnel := ssh.NewTunnel(proxy)
+		defer tunnel.Close()
+
+		// Test connection by dialing a neutral destination
+		conn, err := tunnel.Dial("1.1.1.1:80", timeout)
+		if err != nil {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"success": false,
+				"error":   err.Error(),
+			})
+			return
+		}
+		conn.Close()
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{"success": true})
+		return
+	}
+
+	// SOCKS5 proxy test (original behavior)
 	conn, err := socks5.DialWithAuth("tcp", req.Address, &socks5.Auth{Username: req.Username, Password: req.Password}, timeout)
 	if err != nil {
-		json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "error": err.Error()})
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"success": false,
+			"error":   err.Error(),
+		})
 		return
 	}
 	conn.Close()
+	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{"success": true})
 }
 

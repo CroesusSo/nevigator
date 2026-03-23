@@ -646,16 +646,16 @@ let gfwRules = [];
      resultSpan.textContent = 'Testing...';
      resultSpan.style.color = '';
     // Build the payload for the test endpoint
-    const data = {address: addr, username: user, password: pass, kind: 'ssh'};
-    // Actually, the authMethod value is either 'password' or 'key'
-    // We'll use the value from the select
-    data.auth_method = authMethod;
-    if (authMethod === 'key') {
-      data.private_key_path = privateKeyPath;
-    } else {
-      data.password = pass;
-    }
-    data.ssh_port = parseInt(port) || 22;
+    const data = {
+      address: addr,
+      username: user,
+      password: pass,
+      kind: 'ssh',
+      auth_method: authMethod,
+      private_key_path: privateKeyPath,
+      ssh_port: parseInt(port) || 22,
+      host_key_check: document.getElementById('new-ssh-host-key-check').value
+    };
      fetch('/api/proxies/test', {
        method: 'POST',
        headers: {'Content-Type': 'application/json'},
