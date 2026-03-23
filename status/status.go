@@ -12,17 +12,25 @@ type Connection struct {
 	StartedAt  time.Time `json:"startedAt"`
 }
 
+// SSHTunnelStatus represents the runtime status of an SSH tunnel.
+type SSHTunnelStatus struct {
+	State      string `json:"state"` // "connected", "connecting", "reconnecting", "closed"
+	LastError  string `json:"lastError,omitempty"`
+	RemoteAddr string `json:"remoteAddr"` // SSH server address
+}
+
 // ServerStatus holds runtime status of the proxy server.
 type ServerStatus struct {
-	HTTPListen   string `json:"httpListen"`
-	SOCKS5Listen string `json:"socks5Listen"`
-	AdminListen  string `json:"adminListen"`
-	HTTPSListen  string `json:"httpsListen,omitempty"`
-	TUNDevice    string `json:"tunDevice"`
-	TUNIP        string `json:"tunIP,omitempty"`
-	TUNUp        bool   `json:"tunUp"`
-	ActiveConns  int    `json:"activeConns"`
-	TotalConns   int64  `json:"totalConns"`
+	HTTPListen   string                     `json:"httpListen"`
+	SOCKS5Listen string                     `json:"socks5Listen"`
+	AdminListen  string                     `json:"adminListen"`
+	HTTPSListen  string                     `json:"httpsListen,omitempty"`
+	TUNDevice    string                     `json:"tunDevice"`
+	TUNIP        string                     `json:"tunIP,omitempty"`
+	TUNUp        bool                       `json:"tunUp"`
+	ActiveConns  int                        `json:"activeConns"`
+	TotalConns   int64                      `json:"totalConns"`
+	SSHTunnels   map[string]SSHTunnelStatus `json:"sshTunnels,omitempty"`
 }
 
 // StatusProvider exposes runtime status information.

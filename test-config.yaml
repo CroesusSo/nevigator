@@ -1,0 +1,27 @@
+proxy:
+  http_listen: ":8081"
+  socks5_listen: ":11081"
+  admin_listen: "127.0.0.1:9091"
+  pac_path: "./test.pac"
+  tun_device: "tun0"
+  default_external_proxy: ssh
+  external_proxies:
+    - id: "ssh"
+      kind: "ssh"
+      address: "croesus@myhk:22"
+      username: "croesus"
+      auth_method: "key"
+      private_key_path: "/home/croesus/.ssh/id_rsa"
+pac:
+  local_ip: ""
+  dns_timeout: 500ms
+  eval_timeout: 200ms
+  enable_dns_cache: true
+  dns_max_entries: 100
+  dns_ttl: 5m
+  cache_enabled: true
+  cache_max_size: 10000
+  cache_ttl: 10m
+
+gfw:
+  disabled: true

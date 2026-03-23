@@ -1,11 +1,32 @@
 package router
 
 import (
+	"net"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/yourorg/proxy-pac/pac"
+	"github.com/yourorg/proxy-pac/status"
 )
+
+// mockManager is a test double for TunnelManager interface.
+type mockManager struct {
+	dialCalled   bool
+	dialErr      error
+	returnedConn net.Conn
+}
+
+func (m *mockManager) Dial(id, dest string, timeout time.Duration) (net.Conn, error) {
+	m.dialCalled = true
+	return m.returnedConn, m.dialErr
+}
+
+func (m *mockManager) UpdateProxies(proxies []pac.ExternalProxy) {}
+func (m *mockManager) Close() error                              { return nil }
+func (m *mockManager) GetTunnelsStatus() map[string]status.SSHTunnelStatus {
+	return map[string]status.SSHTunnelStatus{}
+}
 
 func TestRouter_SetProxyRegistry(t *testing.T) {
 	r := &Router{}
@@ -74,5 +95,37 @@ func TestRouter_DefaultRoute_DefaultNotFound(t *testing.T) {
 	_, err := r.dialWithRoute("8.8.8.8:53", route)
 	if err == nil || !strings.Contains(err.Error(), "default external proxy not found") {
 		t.Errorf("expected error about default proxy not found, got %v", err)
+	}
+}
+
+// TestRouter_ExternalRoute_SSH tests that EXTERNAL with Kind=ssh uses tunnel manager.
+func TestRouter_ExternalRoute_SSH(t *testing.T) {
+	r := &Router{dialTimeout: 30 * time.Second}
+	mockMgr := &mockManager{}
+	r.tunnelMgr = mockMgr
+	r.SetProxyRegistry([]pac.ExternalProxy{
+		{ID: "ssh-proxy", Kind: "ssh", Address: "host:22"},
+	})
+	route := pac.Route{Strategy: "EXTERNAL", ExternalID: "ssh-proxy"}
+	_, err := r.dialWithRoute("example.com:80", route)
+	if err != nil {
+		t.Fatalf("expected no error from mock manager, got %v", err)
+	}
+	if !mockMgr.dialCalled {
+		t.Error("expected tunnel manager Dial to be called")
+	}
+}
+
+// TestRouter_ExternalRoute_SSH_NoManager tests that EXTERNAL with Kind=ssh fails if tunnelMgr is nil.
+func TestRouter_ExternalRoute_SSH_NoManager(t *testing.T) {
+	r := &Router{dialTimeout: 30 * time.Second}
+	// tunnelMgr is nil
+	r.SetProxyRegistry([]pac.ExternalProxy{
+		{ID: "ssh-proxy", Kind: "ssh", Address: "host:22"},
+	})
+	route := pac.Route{Strategy: "EXTERNAL", ExternalID: "ssh-proxy"}
+	_, err := r.dialWithRoute("example.com:80", route)
+	if err == nil || !strings.Contains(err.Error(), "SSH tunnel manager not configured") {
+		t.Errorf("expected error about missing tunnel manager, got %v", err)
 	}
 }

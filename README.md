@@ -138,6 +138,34 @@ gfw:
 - **disabled**: When true, the fetcher will not perform any fetches (startup, periodic, manual) and the PAC generator will exclude GFW rules. The feature can be toggled at runtime via the Admin UI (GFW tab).
 - The Admin UI also allows manual fetching and displays status (enabled/disabled, last fetch, rule count).
 
+## SSH Tunnels
+
+The proxy supports SSH tunnels as an external proxy type alongside SOCKS5. This allows routing traffic through SSH servers using direct channel multiplexing.
+
+### Configuration
+
+Add an external proxy with `kind: "ssh"`:
+
+```yaml
+proxy:
+  external_proxies:
+    - id: "ssh-gfw"
+      kind: "ssh"
+      address: "user@ssh.example.com:22"
+      auth_method: "key"
+      private_key_path: "/path/to/id_rsa"
+      host_key_check: "strict"
+```
+
+- `address`: may include `user@` prefix and/or `:port`. The port can also be set via `ssh_port` (takes precedence). Default port 22.
+- `username`: SSH username (optional if included in `address`)
+- `auth_method`: `"password"` or `"key"` (required)
+- For `"password"`: `password` field required
+- For `"key"`: `private_key_path` required (unencrypted PEM)
+- `host_key_check`: `"strict"` (default) or `"ignore"`. With `"strict"`, the system uses `~/.ssh/known_hosts` or a provided `host_key_fingerprint` (hex) for pinning.
+
+The admin UI's Proxies tab supports creating and testing SSH proxies. See the [External Proxy Registry spec](../openspec/specs/external-proxy-registry/spec.md) for full details.
+
 ## PAC Script Format
 
 **Important:** This proxy uses a **native rule engine only** — it does **not** execute arbitrary JavaScript PAC functions. PAC files must contain a special `__PAC_RULES__` JSON variable with structured rules. The `FindProxyForURL` function is required but ignored; it's just a placeholder to maintain compatibility with the PAC file format.

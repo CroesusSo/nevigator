@@ -18,6 +18,7 @@ import (
 	"github.com/yourorg/proxy-pac/pac"
 	"github.com/yourorg/proxy-pac/proxy"
 	"github.com/yourorg/proxy-pac/router"
+	"github.com/yourorg/proxy-pac/ssh"
 	"gopkg.in/yaml.v3"
 )
 
@@ -293,6 +294,22 @@ func main() {
 		log.Fatalf("Failed to create router: %v", err)
 	}
 
+	// Create SSH tunnel manager if any SSH proxies are configured
+	var tunnelMgr *ssh.Manager
+	for _, p := range cfg.Proxy.ExternalProxies {
+		if p.Kind == "ssh" {
+			tunnelMgr = ssh.NewManager()
+			break
+		}
+	}
+	if tunnelMgr != nil {
+		router.SetTunnelManager(tunnelMgr)
+		// Ensure graceful shutdown
+		defer func() {
+			tunnelMgr.Close()
+		}()
+	}
+
 	// Create and start proxy server
 	proxyCfg := pac.ProxyConfig{
 		HTTPListen:   cfg.Proxy.HTTPListen,
@@ -309,6 +326,7 @@ func main() {
 	// Set external proxy registry and default
 	if len(cfg.Proxy.ExternalProxies) > 0 {
 		router.SetProxyRegistry(cfg.Proxy.ExternalProxies)
+		// Note: SetProxyRegistry already calls tunnelMgr.UpdateProxies if tunnelMgr is set
 	}
 	if cfg.Proxy.DefaultExternalProxy != "" {
 		router.SetDefaultProxyID(cfg.Proxy.DefaultExternalProxy)

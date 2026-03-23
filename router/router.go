@@ -10,7 +10,16 @@ import (
 
 	"github.com/yourorg/proxy-pac/pac"
 	"github.com/yourorg/proxy-pac/socks5"
+	"github.com/yourorg/proxy-pac/status"
 )
+
+// TunnelManager abstraction for dialing through external proxies (SSH or future types).
+type TunnelManager interface {
+	Dial(id, dest string, timeout time.Duration) (net.Conn, error)
+	UpdateProxies(proxies []pac.ExternalProxy)
+	Close() error
+	GetTunnelsStatus() map[string]status.SSHTunnelStatus
+}
 
 var (
 	ErrTUNNotConfigured              = errors.New("TUN not configured")
@@ -47,6 +56,7 @@ type Router struct {
 	proxyMu        sync.RWMutex
 	proxyRegistry  map[string]pac.ExternalProxy // ID → proxy
 	defaultProxyID string
+	tunnelMgr      TunnelManager // optional, for SSH proxies
 }
 
 // NewRouter creates a Router with the given config.
@@ -71,6 +81,10 @@ func (r *Router) SetProxyRegistry(proxies []pac.ExternalProxy) {
 	for _, p := range proxies {
 		r.proxyRegistry[p.ID] = p
 	}
+	// Notify tunnel manager if present
+	if r.tunnelMgr != nil {
+		r.tunnelMgr.UpdateProxies(proxies)
+	}
 }
 
 // SetDefaultProxyID sets the default external proxy ID.
@@ -78,6 +92,16 @@ func (r *Router) SetDefaultProxyID(id string) {
 	r.proxyMu.Lock()
 	defer r.proxyMu.Unlock()
 	r.defaultProxyID = id
+}
+
+// SetTunnelManager sets the SSH tunnel manager (optional).
+func (r *Router) SetTunnelManager(mgr TunnelManager) {
+	r.tunnelMgr = mgr
+}
+
+// GetTunnelManager returns the configured tunnel manager (may be nil).
+func (r *Router) GetTunnelManager() TunnelManager {
+	return r.tunnelMgr
 }
 
 // Route establishes an outbound connection according to the given route.
@@ -123,8 +147,17 @@ func (r *Router) dialWithRoute(dest string, route pac.Route) (net.Conn, error) {
 		if !ok {
 			return nil, fmt.Errorf("external proxy not found: %s", route.ExternalID)
 		}
-		auth := &socks5.Auth{Username: proxy.Username, Password: proxy.Password}
-		return r.dialSOCKS5WithAuth(dest, proxy.Address, dialer, auth)
+		switch proxy.Kind {
+		case "ssh":
+			if r.tunnelMgr == nil {
+				return nil, errors.New("SSH tunnel manager not configured")
+			}
+			// Use the router's dialTimeout for the tunnel Dial
+			return r.tunnelMgr.Dial(proxy.ID, dest, r.dialTimeout)
+		default: // "socks5" (default)
+			auth := &socks5.Auth{Username: proxy.Username, Password: proxy.Password}
+			return r.dialSOCKS5WithAuth(dest, proxy.Address, dialer, auth)
+		}
 	case "DEFAULT":
 		if route.ExternalID != "" {
 			// Should not happen, but guard
@@ -142,8 +175,16 @@ func (r *Router) dialWithRoute(dest string, route pac.Route) (net.Conn, error) {
 		if !ok {
 			return nil, fmt.Errorf("default external proxy not found: %s", id)
 		}
-		auth := &socks5.Auth{Username: proxy.Username, Password: proxy.Password}
-		return r.dialSOCKS5WithAuth(dest, proxy.Address, dialer, auth)
+		switch proxy.Kind {
+		case "ssh":
+			if r.tunnelMgr == nil {
+				return nil, errors.New("SSH tunnel manager not configured")
+			}
+			return r.tunnelMgr.Dial(proxy.ID, dest, r.dialTimeout)
+		default: // "socks5"
+			auth := &socks5.Auth{Username: proxy.Username, Password: proxy.Password}
+			return r.dialSOCKS5WithAuth(dest, proxy.Address, dialer, auth)
+		}
 	case "DIRECT":
 		return dialer.Dial("tcp", dest)
 	default:

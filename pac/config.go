@@ -43,12 +43,20 @@ type TLSConfig struct {
 	Timeout time.Duration `yaml:"timeout" json:"timeout"`
 }
 
-// ExternalProxy represents an upstream SOCKS5 proxy with optional authentication.
+// ExternalProxy represents an upstream proxy (SOCKS5 or SSH) with optional authentication.
 type ExternalProxy struct {
 	ID       string `yaml:"id" json:"id"`
-	Address  string `yaml:"address" json:"address"`
+	Kind     string `yaml:"kind,omitempty" json:"kind,omitempty"` // "socks5" (default) or "ssh"
+	Address  string `yaml:"address" json:"address"`               // SOCKS5 host:port; for SSH: host[:port] or user@host[:port]
 	Username string `yaml:"username,omitempty" json:"username,omitempty"`
 	Password string `yaml:"password,omitempty" json:"password,omitempty"`
+
+	// SSH-only fields (ignored if Kind != "ssh")
+	SSHPort            int    `yaml:"ssh_port,omitempty" json:"ssh_port,omitempty"`       // default 22; overrides any port in Address
+	AuthMethod         string `yaml:"auth_method,omitempty" json:"auth_method,omitempty"` // "password" or "key" (required if Kind=="ssh")
+	PrivateKeyPath     string `yaml:"private_key_path,omitempty" json:"private_key_path,omitempty"`
+	HostKeyCheck       string `yaml:"host_key_check,omitempty" json:"host_key_check,omitempty"`             // "strict" (default) or "ignore"
+	HostKeyFingerprint string `yaml:"host_key_fingerprint,omitempty" json:"host_key_fingerprint,omitempty"` // optional hex fingerprint for pinning
 }
 
 // Route represents a routing decision from PAC evaluation.
