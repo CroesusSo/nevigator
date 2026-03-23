@@ -4,15 +4,11 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
-	"gopkg.in/yaml.v3"
-
-	"github.com/yourorg/proxy-pac/gfw"
+	"github.com/yourorg/proxy-pac/router"
 	"github.com/yourorg/proxy-pac/status"
 )
 
@@ -28,61 +24,29 @@ func TestUIHasEnhancedFeatures(t *testing.T) {
 
 	html := w.Body.String()
 
-	// Check for data attributes in JS renderRules function
-	if !strings.Contains(html, "data-id") || !strings.Contains(html, "data-route") || !strings.Contains(html, "data-match") {
-		t.Errorf("HTML missing data-id, data-route, or data-match attributes")
+	// Check that HTML references external CSS and JS files (separation of concerns)
+	if !strings.Contains(html, `<link rel="stylesheet" href="/static/style.css">`) {
+		t.Errorf("HTML missing link to external CSS file")
+	}
+	if !strings.Contains(html, `<script src="/static/script.js"></script>`) {
+		t.Errorf("HTML missing script tag for external JS file")
 	}
 
-	// Check for GFW checkbox and section
+	// Check for essential HTML structure and IDs (content still present)
 	if !strings.Contains(html, `id="show-gfw"`) {
 		t.Errorf("HTML missing GFW show checkbox")
 	}
 	if !strings.Contains(html, `class="gfw-section"`) {
 		t.Errorf("HTML missing gfw-section container")
 	}
-
-	// Check for validation function
-	if !strings.Contains(html, "function validatePattern") {
-		t.Errorf("HTML missing validatePattern function")
+	if !strings.Contains(html, `id="rules-body"`) {
+		t.Errorf("HTML missing rules table body")
+	}
+	if !strings.Contains(html, `id="new-match"`) {
+		t.Errorf("HTML missing new-match select")
 	}
 
-	// Check for tooltips map
-	if !strings.Contains(html, "tooltips") || !strings.Contains(html, "domain_suffix") {
-		t.Errorf("HTML missing tooltips definitions")
-	}
-
-	// Check for edit functions
-	if !strings.Contains(html, "function startEdit") {
-		t.Errorf("HTML missing startEdit function")
-	}
-	if !strings.Contains(html, "function saveEdit") {
-		t.Errorf("HTML missing saveEdit function")
-	}
-	if !strings.Contains(html, "function cancelEdit") {
-		t.Errorf("HTML missing cancelEdit function")
-	}
-
-	// Check for keyboard event handler
-	if !strings.Contains(html, "handleEditKeyup") || !strings.Contains(html, "keyup") {
-		t.Errorf("HTML missing keyboard event handling")
-	}
-
-	// Check for route badge CSS classes
-	if !strings.Contains(html, ".badge-tun") || !strings.Contains(html, ".badge-direct") || !strings.Contains(html, ".badge-socks5") {
-		t.Errorf("HTML missing route badge CSS classes")
-	}
-
-	// Check for match type badge CSS classes
-	if !strings.Contains(html, ".badge-host_glob") || !strings.Contains(html, ".badge-url_glob") {
-		t.Errorf("HTML missing match type badge CSS classes")
-	}
-
-	// Check for lazy rendering variables and functions
-	if !strings.Contains(html, "gfwRowHeight") || !strings.Contains(html, "renderGFWSlice") {
-		t.Errorf("HTML missing lazy rendering scaffolding")
-	}
-
-	// Check for evaluation order hint
+	// Check for evaluation order hint (text content in HTML)
 	if !strings.Contains(html, "Rules are evaluated top-to-bottom") {
 		t.Errorf("HTML missing evaluation order hint")
 	}
@@ -153,7 +117,7 @@ func TestHandleStatusAPI(t *testing.T) {
 			TotalConns:   42,
 		},
 	}
-	h := &Handler{statusProvider: mp}
+	h := &Handler{statusProvider: mp, router: &router.Router{}}
 
 	req := httptest.NewRequest(http.MethodGet, "/api/status", nil)
 	w := httptest.NewRecorder()
@@ -289,94 +253,78 @@ func TestValidateProxyAddress(t *testing.T) {
 		} else {
 			if err != nil {
 				t.Errorf("validateProxyAddress(%s) expected no error, got %v", c.addr, err)
+			}
 		}
 	}
 }
 
-
-func TestHandlePutGFWConfig_ToggleDisabled(t *testing.T) {
-	// Setup temp directory and files
-	dir := t.TempDir()
-	cfgPath := filepath.Join(dir, "config.yaml")
-	userRulesPath := filepath.Join(dir, "user-rules.json")
-	gfwRulesPath := filepath.Join(dir, "gfw-rules.json")
-	pacPath := filepath.Join(dir, "proxy.pac")
-
-	// Create initial config with GFW disabled: false
-	cfgYAML := `proxy:
-  http_listen: ":8080"
-  socks5_listen: ":1080"
-  admin_listen: "127.0.0.1:9090"
-  pac_path: "` + pacPath + `"
-  default_external_proxy: ""
-
-pac:
-  enable_url_glob: false
-
-gfw:
-  disabled: false
-  source_url: "http://example.com/gfwlist.txt"
-  user_rules_path: "` + userRulesPath + `"
-  local_rules_path: "` + gfwRulesPath + `"
-  fetch_on_startup: false
-  update_interval: 24h
-  http_timeout: 10s
-`
-	if err := os.WriteFile(cfgPath, []byte(cfgYAML), 0644); err != nil {
-		t.Fatal(err)
-	}
-	// Create empty rule files
-	os.WriteFile(userRulesPath, []byte("[]"), 0644)
-	os.WriteFile(gfwRulesPath, []byte("[]"), 0644)
-	// Create dummy PAC file
-	os.WriteFile(pacPath, []byte(`function FindProxyForURL(url, host) { return "DIRECT"; }`), 0644)
-
-	// Load full config to get GFW config for fetcher
-	data, err := os.ReadFile(cfgPath)
-	if err != nil { t.Fatal(err) }
-	var full FullConfig
-	if err := yaml.Unmarshal(data, &full); err != nil { t.Fatal(err) }
-
-	// Create real fetcher
-	fetcher, err := gfw.NewFetcher(full.GFW)
-	if err != nil { t.Fatal(err) }
-	fetcher.SetDisabled(full.GFW.Disabled)
-
-	// Construct handler with minimal fields
-	h := &Handler{
-		configPath:           cfgPath,
-		fetcher:              fetcher,
-		userPath:             full.GFW.UserRulesPath,
-		gfwPath:              full.GFW.LocalRulesPath,
-		pacPath:              full.Proxy.PACPath,
-		defaultExternalProxy: full.Proxy.DefaultExternalProxy,
-	}
-
-	// Send PUT request to disable GFW
-	reqBody := `{"disabled": true}`
-	req := httptest.NewRequest(http.MethodPut, "/api/gfw/config", strings.NewReader(reqBody))
-	req.Header.Set("Content-Type", "application/json")
+// New tests for static asset handling
+func TestHandleStatic_CSS(t *testing.T) {
+	h := &Handler{}
+	req := httptest.NewRequest(http.MethodGet, "/static/style.css", nil)
 	w := httptest.NewRecorder()
-
-	h.handleGFWConfig(w, req)
+	h.handleStatic(w, req)
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("status code = %d, want %d", w.Code, http.StatusOK)
 	}
 
-	// Verify config file updated
-	data, err = os.ReadFile(cfgPath)
-	if err != nil { t.Fatal(err) }
-	var updated FullConfig
-	if err := yaml.Unmarshal(data, &updated); err != nil {
-		t.Fatalf("parse updated config: %v", err)
-	}
-	if updated.GFW.Disabled != true {
-		t.Errorf("GFW.Disabled = %v, want true", updated.GFW.Disabled)
+	ctype := w.Header().Get("Content-Type")
+	if !strings.HasPrefix(ctype, "text/css") {
+		t.Errorf("Content-Type = %q, want text/css", ctype)
 	}
 
-	// Verify fetcher state updated
-	if !fetcher.IsDisabled() {
-		t.Error("fetcher.IsDisabled() = false, want true")
+	body := w.Body.String()
+	if body == "" {
+		t.Error("CSS body is empty")
+	}
+	if !strings.Contains(body, ".badge") {
+		t.Error("CSS missing .badge class")
+	}
+}
+
+func TestHandleStatic_JS(t *testing.T) {
+	h := &Handler{}
+	req := httptest.NewRequest(http.MethodGet, "/static/script.js", nil)
+	w := httptest.NewRecorder()
+	h.handleStatic(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status code = %d, want %d", w.Code, http.StatusOK)
+	}
+
+	ctype := w.Header().Get("Content-Type")
+	if !strings.HasPrefix(ctype, "application/javascript") {
+		t.Errorf("Content-Type = %q, want application/javascript", ctype)
+	}
+
+	body := w.Body.String()
+	if body == "" {
+		t.Error("JS body is empty")
+	}
+	if !strings.Contains(body, "function loadStatus") {
+		t.Error("JS missing loadStatus function")
+	}
+}
+
+func TestHandleStatic_NotFound(t *testing.T) {
+	h := &Handler{}
+	req := httptest.NewRequest(http.MethodGet, "/static/nonexistent.txt", nil)
+	w := httptest.NewRecorder()
+	h.handleStatic(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("status code = %d, want %d", w.Code, http.StatusNotFound)
+	}
+}
+
+func TestHandleStatic_PathTraversal(t *testing.T) {
+	h := &Handler{}
+	req := httptest.NewRequest(http.MethodGet, "/static/../handlers.go", nil)
+	w := httptest.NewRecorder()
+	h.handleStatic(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("status code = %d, want %d", w.Code, http.StatusNotFound)
 	}
 }

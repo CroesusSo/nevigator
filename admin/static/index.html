@@ -1,0 +1,394 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Proxy PAC Admin</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <div class="header"><h1>Proxy PAC Admin</h1></div>
+  <div class="tabs">
+    <div class="tab active" onclick="switchTab('summary')">Summary</div>
+    <div class="tab" onclick="switchTab('connections')">Connections</div>
+    <div class="tab" onclick="switchTab('rules')">Rules</div>
+    <div class="tab" onclick="switchTab('gfw')">GFW List</div>
+     <div class="tab" onclick="switchTab('test')">Test URL</div>
+     <div class="tab" onclick="switchTab('proxies')">Proxies</div>
+     <div class="tab" onclick="switchTab('settings')">Settings</div>
+  </div>
+  <div class="content">
+
+    <!-- Summary Tab -->
+    <div id="panel-summary" class="panel active">
+      <div class="card">
+        <h3>Listening Addresses</h3>
+        <div class="kv"><span class="kv-key">HTTP Proxy</span><span class="kv-val" id="s-http">-</span></div>
+        <div class="kv"><span class="kv-key">SOCKS5 Proxy</span><span class="kv-val" id="s-socks5">-</span></div>
+        <div class="kv"><span class="kv-key">Admin UI</span><span class="kv-val" id="s-admin">-</span></div>
+      </div>
+      <div class="card">
+        <h3>Outgoing</h3>
+        <div class="kv"><span class="kv-key">TUN Device</span><span class="kv-val" id="s-tun">-</span></div>
+      </div>
+      <div class="card">
+        <h3>Connections</h3>
+        <div class="kv"><span class="kv-key">Active</span><span class="kv-val" id="s-active">-</span></div>
+        <div class="kv"><span class="kv-key">Total (since start)</span><span class="kv-val" id="s-total">-</span></div>
+      </div>
+    </div>
+
+    <!-- Connections Tab -->
+    <div id="panel-connections" class="panel">
+      <div class="card">
+        <h3>Active Connections <span id="conn-count" style="color:#999;font-weight:normal;font-size:0.85rem;"></span></h3>
+        <table>
+          <thead>
+            <tr>
+              <th>ID</th>
+              <th>Client</th>
+              <th>Destination</th>
+              <th>Route</th>
+              <th>Protocol</th>
+              <th>Duration</th>
+            </tr>
+          </thead>
+          <tbody id="conn-body"></tbody>
+        </table>
+        <div id="conn-empty" style="padding:2rem;text-align:center;color:#999;display:none;">No active connections</div>
+      </div>
+    </div>
+
+     <!-- Rules Tab -->
+     <div id="panel-rules" class="panel">
+       <div class="card">
+         <h3>Add Rule</h3>
+         <div class="form-row">
+           <label>Match</label>
+           <select id="new-match">
+             <option value="domain_suffix">Domain Suffix</option>
+             <option value="host_glob">Host Glob</option>
+             <option value="url_glob">URL Glob</option>
+             <option value="exact">Exact</option>
+           </select>
+           <label>Pattern</label>
+           <input id="new-value" placeholder=".example.com">
+           <label>Route</label>
+           <select id="new-route">
+             <option value="DIRECT">DIRECT</option>
+             <option value="TUN">TUN</option>
+             <option value="SOCKS5 127.0.0.1:1080">SOCKS5 (default)</option>
+           </select>
+          <button class="btn btn-primary" onclick="addRule()">Add</button>
+          </div>
+          <div id="url-glob-warning" class="error" style="display:none;margin:0.5rem 0 0 1rem;">URL-glob rules are disabled in Settings; they will be filtered out and will not take effect.</div>
+        </div>
+       <p class="hint">Rules are evaluated top-to-bottom. User rules always take precedence over GFW rules.</p>
+       <h3>User Rules</h3>
+       <table>
+         <thead>
+           <tr>
+             <th width="30">#</th>
+             <th width="60">Source</th>
+             <th width="50">On/Off</th>
+             <th width="120">Match Type <span title="domain_suffix: match domain suffixes; host_glob: * and ? wildcards for hostnames; url_glob: * and ? wildcards for full URLs; exact: exact match">?</span></th>
+             <th>Pattern</th>
+             <th width="180">Route <span title="DIRECT: no proxy; TUN: route through TUN device; SOCKS5: use upstream SOCKS5 proxy">?</span></th>
+             <th width="120">Actions</th>
+           </tr>
+         </thead>
+         <tbody id="rules-body"></tbody>
+       </table>
+       <div id="rules-msg" style="margin-top:1rem;"></div>
+       
+       <div style="margin-top:1rem;">
+         <label>
+           <input type="checkbox" id="show-gfw"> Show GFW rules (<span id="gfw-count">0</span> rules)
+         </label>
+       </div>
+       
+       <div class="gfw-section" style="display:none;">
+         <h3>GFW Rules</h3>
+         <table>
+           <thead>
+             <tr>
+               <th width="120">Match Type <span title="domain_suffix: match domain suffixes; host_glob: * and ? wildcards for hostnames; url_glob: * and ? wildcards for full URLs; exact: exact match">?</span></th>
+               <th width="60">Route</th>
+               <th>Pattern</th>
+             </tr>
+           </thead>
+           <tbody id="gfw-body"></tbody>
+         </table>
+       </div>
+     </div>
+
+    <!-- GFW Tab -->
+    <div id="panel-gfw" class="panel">
+        <div class="card">
+          <h3>GFW List Configuration</h3>
+         <div class="form-row">
+           <label><input type="checkbox" id="gfw-enabled" onchange="saveGFWEnabled()"> Enable GFW</label>
+         </div>
+          <div class="form-row">
+           <label>Source URL</label>
+           <input id="gfw-url" style="flex:3" placeholder="https://github.com/gfwlist/gfwlist/raw/refs/heads/master/gfwlist.txt">
+           <button class="btn btn-secondary" onclick="saveGFWUrl()">Save URL</button>
+         </div>
+        <div class="form-row">
+          <button class="btn btn-primary" onclick="fetchGFW()" id="gfw-fetch-btn">Fetch Now</button>
+          <span id="gfw-msg"></span>
+        </div>
+      </div>
+      <div class="card">
+        <h3>Status</h3>
+        <div id="gfw-status">Loading...</div>
+      </div>
+    </div>
+
+    <!-- Test Tab -->
+    <div id="panel-test" class="panel">
+      <div class="card">
+        <h3>Test URL Routing</h3>
+        <div class="form-row">
+          <input id="testurl" placeholder="https://example.com" style="flex:3">
+          <button class="btn btn-primary" onclick="testUrl()">Test</button>
+        </div>
+        <pre id="testresult"></pre>
+      </div>
+     </div>
+
+     <!-- Proxies Tab -->
+     <div id="panel-proxies" class="panel">
+       <div class="card">
+         <h3>External Proxies</h3>
+         <div class="form-row">
+           <label>Default External Proxy</label>
+           <select id="default-proxy-select">
+             <option value="">(none)</option>
+           </select>
+           <button class="btn btn-primary" onclick="saveDefaultProxy()">Set Default</button>
+         </div>
+         <p class="hint">The special PAC return value <code>DEFAULT</code> will use this proxy.</p>
+       </div>
+
+       <div class="card">
+         <h3>Upstream Proxies</h3>
+         <table>
+           <thead>
+             <tr>
+               <th>ID</th>
+               <th>Address</th>
+               <th>Auth</th>
+               <th>Actions</th>
+             </tr>
+           </thead>
+           <tbody id="proxies-body"></tbody>
+         </table>
+          <button class="btn btn-primary" style="margin-top:1rem; margin-right:0.5rem;" onclick="showAddSocks5Modal()">Add SOCKS5 Proxy</button>
+          <button class="btn btn-primary" style="margin-top:1rem;" onclick="showAddSSHModal()">Add SSH Tunnel</button>
+       </div>
+     </div>
+
+       <!-- Add SOCKS5 Proxy Modal -->
+       <div id="add-socks5-modal" style="display:none; position:fixed; top:50%; left:50%; transform:translate(-50%,-50%); background:white; padding:2rem; border:1px solid #ccc; box-shadow:0 4px 16px rgba(0,0,0,0.2); z-index:1000; min-width:400px;">
+         <h3>Add SOCKS5 Proxy</h3>
+         <div class="form-row">
+           <label>ID</label>
+           <input id="new-socks5-id" placeholder="e.g., tor, myproxy">
+         </div>
+         <div class="form-row">
+           <label>Address</label>
+           <input id="new-socks5-addr" placeholder="host:port">
+         </div>
+         <div class="form-row">
+           <label>Username</label>
+           <input id="new-socks5-user" placeholder="optional">
+         </div>
+         <div class="form-row">
+           <label>Password</label>
+           <input type="password" id="new-socks5-pass" placeholder="optional">
+         </div>
+         <div class="form-row">
+           <button class="btn btn-secondary" onclick="testNewSocks5Proxy()">Test</button>
+           <span id="new-socks5-test-result" style="margin-left:1rem;"></span>
+         </div>
+         <div class="form-row" style="margin-top:1rem;">
+           <button class="btn btn-primary" id="save-new-socks5-btn" onclick="saveNewSocks5Proxy()" disabled>Save</button>
+           <button class="btn" onclick="closeAddSocks5Modal()">Cancel</button>
+         </div>
+       </div>
+       <div id="add-socks5-overlay" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.5); z-index:999;" onclick="closeAddSocks5Modal()"></div>
+
+       <!-- Add SSH Tunnel Modal -->
+       <div id="add-ssh-modal" style="display:none; position:fixed; top:50%; left:50%; transform:translate(-50%,-50%); background:white; padding:2rem; border:1px solid #ccc; box-shadow:0 4px 16px rgba(0,0,0,0.2); z-index:1000; min-width:400px;">
+         <h3>Add SSH Tunnel</h3>
+         <div class="form-row">
+           <label>ID</label>
+           <input id="new-ssh-id" placeholder="e.g., ssh-tunnel-1">
+         </div>
+          <div class="form-row">
+            <label>Address</label>
+            <input id="new-ssh-addr" placeholder="host or user@host">
+          </div>
+         <div class="form-row">
+           <label>SSH Port</label>
+           <input id="new-ssh-port" type="number" placeholder="22">
+         </div>
+         <div class="form-row">
+           <label>Username</label>
+           <input id="new-ssh-user" placeholder="optional (or in address)">
+         </div>
+          <div class="form-row">
+            <label>Auth Method</label>
+            <select id="new-ssh-auth-method" onchange="toggleSSHAuthFields()">
+              <option value="password">Password</option>
+              <option value="key">Private Key</option>
+            </select>
+          </div>
+         <div class="form-row" id="ssh-password-field">
+           <label>Password</label>
+           <input type="password" id="new-ssh-pass" placeholder="for password auth">
+         </div>
+         <div class="form-row" id="ssh-key-path-field">
+           <label>Private Key Path</label>
+           <input id="new-ssh-private-key-path" placeholder="/path/to/key.pem">
+         </div>
+         <div class="form-row">
+           <label>Host Key Check</label>
+           <select id="new-ssh-host-key-check">
+             <option value="strict">Strict (known_hosts)</option>
+             <option value="ignore">Ignore (insecure)</option>
+           </select>
+         </div>
+         <div class="form-row">
+           <button class="btn btn-secondary" onclick="testNewSSHProxy()">Test</button>
+           <span id="new-ssh-test-result" style="margin-left:1rem;"></span>
+         </div>
+         <div class="form-row" style="margin-top:1rem;">
+           <button class="btn btn-primary" id="save-new-ssh-btn" onclick="saveNewSSHProxy()" disabled>Save</button>
+           <button class="btn" onclick="closeAddSSHModal()">Cancel</button>
+         </div>
+       </div>
+       <div id="add-ssh-overlay" style="display:none; position:fixed; top:0; left=0; width=100%; height=100%; background:rgba(0,0,0,0.5); z-index=999;" onclick="closeAddSSHModal()"></div>
+
+      <!-- Settings Tab -->
+      <div id="panel-settings" class="panel">
+        <div class="card">
+          <h3>Proxy Listeners</h3>
+          <div class="form-row">
+            <label>HTTP Proxy (listen)</label>
+            <input id="http-listen" value="0.0.0.0:8080">
+          </div>
+          <div class="form-row">
+            <label>SOCKS5 Proxy (listen)</label>
+            <input id="socks5-listen" value="0.0.0.0:1080">
+          </div>
+          <div class="form-row">
+            <label>Admin UI (listen)</label>
+            <input id="admin-listen" value="127.0.0.1:9090">
+          </div>
+          <div class="form-row">
+            <label>HTTPS Proxy (listen)</label>
+            <input id="https-listen" placeholder=":8443" value=":8443">
+          </div>
+        </div>
+
+        <div class="card">
+          <h3>TLS Settings</h3>
+          <p class="hint">TLS certificate and key for HTTPS proxy. Restart required after changes.</p>
+          <div class="form-row">
+            <label>Certificate file</label>
+            <input id="tls-certificate" placeholder="/path/to/cert.pem">
+          </div>
+          <div class="form-row">
+            <label>Key file</label>
+            <input id="tls-key" placeholder="/path/to/key.pem">
+          </div>
+          <div class="form-row">
+            <label>CA file (optional)</label>
+            <input id="tls-ca" placeholder="/path/to/ca.pem">
+          </div>
+          <div class="form-row">
+            <label>Client auth</label>
+            <select id="tls-client-auth">
+              <option value="">None</option>
+              <option value="request">Request</option>
+              <option value="require_any">Require any</option>
+              <option value="verify_if_given">Verify if given</option>
+              <option value="require_verify">Require and verify</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="card">
+          <h3>Paths & Devices</h3>
+          <div class="form-row">
+            <label>PAC file path</label>
+            <input id="pac-path" value="/etc/proxy.pac">
+          </div>
+          <div class="form-row">
+            <label>TUN device</label>
+            <input id="tun-device" value="tun0">
+          </div>
+        </div>
+
+        <div class="card">
+          <h3>PAC Settings</h3>
+          <div class="form-row">
+            <label>
+              <input type="checkbox" id="enable-url-glob">
+              Enable URL-glob rules
+            </label>
+          </div>
+          <div class="form-row">
+            <label>
+              <input type="checkbox" id="enable-dns-cache">
+              Enable DNS Cache
+            </label>
+          </div>
+          <div class="form-row">
+            <label>DNS Max Entries</label>
+            <input id="dns-max-entries" type="number" min="1">
+          </div>
+          <div class="form-row">
+            <label>DNS TTL</label>
+            <input id="dns-ttl" placeholder="5m">
+          </div>
+          <div class="form-row">
+            <label>
+              <input type="checkbox" id="cache-enabled">
+              Enable Rule Cache
+            </label>
+          </div>
+          <div class="form-row">
+            <label>Cache Max Size</label>
+            <input id="cache-max-size" type="number" min="1">
+          </div>
+          <div class="form-row">
+            <label>Cache TTL</label>
+            <input id="cache-ttl" placeholder="10m">
+          </div>
+          <div class="form-row">
+            <label>Local IP</label>
+            <input id="local-ip" placeholder="auto">
+          </div>
+          <div class="form-row">
+            <label>DNS Timeout</label>
+            <input id="dns-timeout" placeholder="500ms">
+          </div>
+          <div class="form-row">
+            <label>Eval Timeout</label>
+            <input id="eval-timeout" placeholder="200ms">
+          </div>
+          <p class="hint">When enabled, rules using URL pattern matching (url_glob) are included in the generated PAC. Note: URL-glob is ineffective in CONNECT mode because the full URL is not available.</p>
+        </div>
+
+        <div class="card">
+          <h3>Save Changes</h3>
+          <p class="hint">Listener changes require a restart to take effect. Other changes are applied immediately.</p>
+          <button class="btn btn-primary" onclick="saveConfig()">Save Configuration</button>
+        </div>
+      </div>
+
+   </div>
+<script src="/static/script.js"></script>
+</body>
+</html>
