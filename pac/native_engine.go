@@ -69,9 +69,81 @@ func get_segments(pattern string, reverse bool) []string {
 	return segments
 }
 
-func (t *domainSuffixTrie) insert(pattern string, meta ruleMeta) {
-	segments := get_segments(pattern, false)
+// Simplified logic: Split only on dots that aren't inside regex parens/brackets
+func splitDomainPattern(pattern string) []string {
+	var segments []string
+	var current []rune
+	runes := []rune(pattern)
 
+	brackets, parens, braces := 0, 0, 0
+	escaped := false
+
+	for i := 0; i < len(runes); i++ {
+		r := runes[i]
+
+		if escaped {
+			current = append(current, r)
+			escaped = false
+			continue
+		}
+
+		switch r {
+		case '\\':
+			escaped = true
+			current = append(current, r)
+		case '[':
+			brackets++
+			current = append(current, r)
+		case ']':
+			brackets--
+			current = append(current, r)
+		case '(':
+			parens++
+			current = append(current, r)
+		case ')':
+			parens--
+			current = append(current, r)
+		case '{':
+			braces++
+			current = append(current, r)
+		case '}':
+			braces--
+			current = append(current, r)
+		case '.':
+			// Is this a structural dot or a regex dot?
+			isSeparator := true
+
+			// 1. If inside any brackets/parens, it's NOT a separator
+			if brackets > 0 || parens > 0 || braces > 0 {
+				isSeparator = false
+			}
+
+			// 2. Lookahead: If the NEXT char is a quantifier, the dot is REGEX
+			if i+1 < len(runes) {
+				next := runes[i+1]
+				if next == '*' || next == '+' || next == '?' || next == '{' {
+					isSeparator = false
+				}
+			}
+
+			if isSeparator {
+				segments = append(segments, string(current))
+				current = []rune{}
+			} else {
+				current = append(current, r)
+			}
+		default:
+			current = append(current, r)
+		}
+	}
+
+	if len(current) > 0 {
+		segments = append(segments, string(current))
+	}
+	return segments
+}
+
+func (t *domainSuffixTrie) insert(segments []string, meta ruleMeta) {
 	node := t.root
 
 	// proceed in reverse order www.google.com -> "com" "google" "www"
@@ -86,7 +158,7 @@ func (t *domainSuffixTrie) insert(pattern string, meta ruleMeta) {
 				}
 				node = node.wildcards_child
 			} else {
-				log.Printf("[WARN] Ignoring middle * rule for pattern %s at segment %s", pattern, seg)
+				log.Printf("[WARN] Ignoring middle * rule for pattern %q at segment %s", segments, seg)
 				return
 			}
 		} else if strings.ContainsAny(seg, "*?") {
@@ -100,7 +172,7 @@ func (t *domainSuffixTrie) insert(pattern string, meta ruleMeta) {
 				return
 			} else {
 				// TODO: we did not take care of complex globs ("a.ay-*.c")
-				log.Printf("[WARN] Ignoring middle Glob rule for %s:(%s)", pattern, seg)
+				log.Printf("[WARN] Ignoring middle Glob rule for %p:(%s)", segments, seg)
 				return
 			}
 		} else {
@@ -242,15 +314,18 @@ func NewNativeRuleEngine(pacContent string, fallback Route, enableDeepest bool) 
 		switch r.Match {
 		case gfw.MatchExact:
 			pattern := r.Value
-			engine.suffixTrie.insert(pattern, meta)
-
-		case gfw.MatchHostGlob:
-			pattern := r.Value
-			engine.suffixTrie.insert(pattern, meta)
+			segments := get_segments(pattern, false)
+			engine.suffixTrie.insert(segments, meta)
 
 		case gfw.MatchDomainSuffix:
 			pattern := strings.TrimPrefix(r.Value, ".")
-			engine.suffixTrie.insert(pattern, meta)
+			segments := get_segments(pattern, false)
+			engine.suffixTrie.insert(segments, meta)
+
+		case gfw.MatchHostGlob:
+			pattern := r.Value
+			segments := splitDomainPattern(pattern)
+			engine.suffixTrie.insert(segments, meta)
 
 		case gfw.MatchURLGlob:
 			log.Printf("[WARN] Ignoring MatchURLGlob rule for %s: URL-glob not supported in native engine", r.Value)
