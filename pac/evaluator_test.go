@@ -62,10 +62,6 @@ func TestEvaluatorSyntaxError(t *testing.T) {
 	}
 }
 
-func TestEvaluatorTimeout(t *testing.T) {
-	t.Skip("native engine does not have infinite loop issue")
-}
-
 func TestEvaluatorCreatesDefaultPAC(t *testing.T) {
 	dir := t.TempDir()
 	pacPath := filepath.Join(dir, "nonexistent.pac")

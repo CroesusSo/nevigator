@@ -8,35 +8,6 @@ import (
 	"github.com/yourorg/proxy-pac/gfw"
 )
 
-// TestEvaluatorNativeFallback tests that when __PAC_RULES__ is an invalid array (not an object), the evaluator falls back to JS.
-func TestEvaluatorNativeFallback(t *testing.T) {
-	t.Skip("native-only now; no JS fallback")
-	// Use an array (invalid schema) but JS is valid
-	pac := `var __PAC_RULES__ = []; function FindProxyForURL(url, host) { return "DIRECT"; }`
-	tmp := t.TempDir() + "/malformed.pac"
-	if err := os.WriteFile(tmp, []byte(pac), 0644); err != nil {
-		t.Fatal(err)
-	}
-	cfg := EvaluatorConfig{
-		PACPath:       tmp,
-		LocalIP:       "127.0.0.1",
-		DNSTimeout:    100 * time.Millisecond,
-		EvalTimeout:   100 * time.Millisecond,
-		FallbackRoute: Route{Strategy: "DIRECT"},
-		CacheEnabled:  false,
-	}
-	e, err := NewEvaluator(cfg)
-	if err != nil {
-		t.Fatalf("NewEvaluator failed: %v", err)
-	}
-	defer e.Close()
-	// Should fall back to JS engine, return DIRECT
-	r := e.Evaluate("example.com")
-	if r.Strategy != "DIRECT" {
-		t.Errorf("expected DIRECT, got %v", r)
-	}
-}
-
 // TestEvaluatorNativeEngine tests that a PAC with valid __PAC_RULES__ (object schema) uses the native engine.
 func TestEvaluatorNativeEngine(t *testing.T) {
 	// Hardcoded valid RulesFile JSON object

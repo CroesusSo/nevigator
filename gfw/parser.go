@@ -50,11 +50,6 @@ func ParseGFWList(input string) []Rule {
 			continue
 		}
 
-		// Skip regex rules
-		if strings.HasPrefix(rule.Value, "*") && strings.HasSuffix(rule.Value, "*") {
-			continue
-		}
-
 		id++
 		rule.ID = fmt.Sprintf("gfw-%d", id)
 		rule.Source = "gfw"

@@ -197,11 +197,6 @@ func TestHotReload(t *testing.T) {
 	}
 }
 
-// TestPACTimout tests that infinite loop in PAC falls back.
-func TestPACTimout(t *testing.T) {
-	t.Skip("native engine does not have infinite loop issue; evaluation is data-driven")
-}
-
 // TestRuleEditorUserPrecedence tests that user rules take precedence over GFW rules.
 func TestRuleEditorUserPrecedence(t *testing.T) {
 	tmpDir := t.TempDir()
