@@ -19,7 +19,11 @@ func FuzzDomainSuffixTrie(f *testing.F) {
 		}
 		trie := newDomainSuffixTrie()
 		meta := ruleMeta{index: index, route: Route{Strategy: "TUN"}}
-		trie.insert(pattern, meta)
+		segments := splitDomainPattern(pattern)
+		if len(segments) == 0 {
+			return
+		}
+		trie.insert(segments, meta)
 
 		// The pattern itself should match
 		got := trie.match(pattern, false)
@@ -33,7 +37,7 @@ func FuzzDomainSuffixTrie(f *testing.F) {
 		// Insert the same pattern with a higher index; earlier index should win
 		if index2 := index + 1; index2 > index {
 			meta2 := ruleMeta{index: index2, route: Route{Strategy: "DIRECT"}}
-			trie.insert(pattern, meta2)
+			trie.insert(segments, meta2)
 			got = trie.match(pattern, false)
 			if got.index != index {
 				t.Fatalf("after duplicate with higher index, expected %d, got %d", index, got.index)

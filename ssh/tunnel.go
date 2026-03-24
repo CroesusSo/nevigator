@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/yourorg/proxy-pac/pac"
@@ -20,7 +21,21 @@ import (
 var (
 	ErrTunnelClosed = fmt.Errorf("tunnel closed")
 	ErrPermanent    = fmt.Errorf("permanent failure")
+
+	// dialSSHVal holds the function used to establish SSH connections.
+	// It is an atomic.Value to allow safe replacement in tests.
+	dialSSHVal atomic.Value // type: func(pac.ExternalProxy) (*ssh.Client, error)
 )
+
+func init() {
+	// Initialize with the real dialSSH function
+	dialSSHVal.Store(dialSSH)
+}
+
+// getDialSSH returns the current dial function (for test override support)
+func getDialSSH() func(pac.ExternalProxy) (*ssh.Client, error) {
+	return dialSSHVal.Load().(func(pac.ExternalProxy) (*ssh.Client, error))
+}
 
 const (
 	stateClosed       = "closed"
@@ -31,92 +46,111 @@ const (
 
 // Tunnel represents a single SSH tunnel connection to a proxy.
 type Tunnel struct {
-	mu      sync.Mutex
-	cfg     pac.ExternalProxy
-	client  *ssh.Client
-	state   string
-	backoff time.Duration
-	closing bool
-	cond    *sync.Cond
-	lastErr error
-	proxyID string
+	mu            sync.Mutex
+	cfg           pac.ExternalProxy
+	client        *ssh.Client
+	state         string
+	backoff       time.Duration
+	closing       bool
+	connectedChan chan struct{} // closed to broadcast connected state
+	lastErr       error
+	proxyID       string
 }
 
 // NewTunnel creates a new Tunnel with the given configuration.
 func NewTunnel(cfg pac.ExternalProxy) *Tunnel {
 	t := &Tunnel{
-		cfg:     cfg,
-		state:   stateClosed,
-		proxyID: cfg.ID,
+		cfg:           cfg,
+		state:         stateClosed,
+		proxyID:       cfg.ID,
+		connectedChan: make(chan struct{}),
 	}
-	t.cond = sync.NewCond(&t.mu)
 	return t
+}
+
+// broadcast closes the current connectedChan and replaces it with a fresh one,
+// waking all waiters. It must be called with the mutex unlocked (it locks internally).
+func (t *Tunnel) broadcast() {
+	t.mu.Lock()
+	old := t.connectedChan
+	t.connectedChan = make(chan struct{})
+	t.mu.Unlock()
+	close(old)
 }
 
 // Dial establishes a connection through the tunnel to the destination.
 // It blocks until the tunnel is connected and the channel is opened, or an error occurs.
 // The timeout parameter bounds the total time including tunnel establishment.
 func (t *Tunnel) Dial(dest string, timeout time.Duration) (net.Conn, error) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-
-	if t.closing {
-		return nil, ErrTunnelClosed
-	}
-
-	// Start connection if not already connected
-	if t.state == stateClosed {
-		t.state = stateConnecting
-		go t.connectLoop()
-	}
-
 	deadline := time.Now().Add(timeout)
 	for {
+		t.mu.Lock()
+		if t.closing {
+			t.mu.Unlock()
+			return nil, ErrTunnelClosed
+		}
+
+		// Start connection if not already connected
+		if t.state == stateClosed {
+			t.state = stateConnecting
+			go t.connectLoop()
+		}
+
+		// Check if already connected
 		if t.client != nil && t.state == stateConnected {
+			t.mu.Unlock()
 			conn, err := t.client.Dial("tcp", dest)
 			if err != nil {
+				t.mu.Lock()
 				t.client.Close()
 				t.client = nil
 				t.state = stateReconnecting
 				t.lastErr = err
-				t.cond.Broadcast()
+				t.mu.Unlock()
+				t.broadcast()
 				continue
 			}
 			return conn, nil
 		}
 
 		if isPermanentError(t.lastErr) {
+			t.mu.Unlock()
+			t.broadcast()
 			return nil, t.lastErr
 		}
 
 		remaining := time.Until(deadline)
 		if remaining <= 0 {
+			t.mu.Unlock()
 			return nil, fmt.Errorf("dial timeout: %w", t.lastErr)
 		}
 
-		// Wait for notification or timeout
-		waitDone := make(chan struct{})
-		go func() {
-			t.cond.Wait()
-			close(waitDone)
-		}()
+		// Capture current notifier
+		notifier := t.connectedChan
+		t.mu.Unlock()
+
 		select {
-		case <-waitDone:
+		case <-notifier:
 			continue
 		case <-time.After(remaining):
-			// Check state after timeout
+			// Final check after timeout
+			t.mu.Lock()
 			if t.client != nil && t.state == stateConnected {
+				t.mu.Unlock()
 				conn, err := t.client.Dial("tcp", dest)
 				if err != nil {
+					t.mu.Lock()
 					t.client.Close()
 					t.client = nil
 					t.state = stateReconnecting
 					t.lastErr = err
-					t.cond.Broadcast()
+					t.mu.Unlock()
+					t.broadcast()
 					continue
 				}
 				return conn, nil
 			}
+			t.mu.Unlock()
 			if t.lastErr != nil {
 				return nil, fmt.Errorf("dial timeout: %w", t.lastErr)
 			}
@@ -139,7 +173,7 @@ func (t *Tunnel) connectLoop() {
 		t.mu.Unlock()
 
 		log.Printf("[SSH] Tunnel %s connecting to %s", t.proxyID, cfg.Address)
-		client, err := dialSSH(cfg)
+		client, err := getDialSSH()(cfg)
 		t.mu.Lock()
 		if t.closing {
 			if client != nil {
@@ -156,12 +190,12 @@ func (t *Tunnel) connectLoop() {
 			log.Printf("[SSH] Tunnel %s connection failed: %v", t.proxyID, err)
 			if isPermanentError(err) {
 				t.closing = true
-				t.mu.Unlock()
-				t.cond.Broadcast()
-				return
 			}
 			t.mu.Unlock()
-
+			t.broadcast()
+			if isPermanentError(err) {
+				return
+			}
 			backoff := t.computeBackoff()
 			log.Printf("[SSH] Tunnel %s reconnecting in %v", t.proxyID, backoff)
 			time.Sleep(backoff)
@@ -175,7 +209,7 @@ func (t *Tunnel) connectLoop() {
 		t.lastErr = nil
 		log.Printf("[SSH] Tunnel %s connected", t.proxyID)
 		t.mu.Unlock()
-		t.cond.Broadcast()
+		t.broadcast()
 		return
 	}
 }
@@ -200,20 +234,19 @@ func (t *Tunnel) computeBackoff() time.Duration {
 // Close shuts down the tunnel.
 func (t *Tunnel) Close() error {
 	t.mu.Lock()
-	defer t.mu.Unlock()
-
 	if t.closing {
+		t.mu.Unlock()
 		return nil
 	}
 	t.closing = true
-
 	if t.client != nil {
 		t.client.Close()
 		t.client = nil
 	}
 	t.state = stateClosed
 	log.Printf("[SSH] Tunnel %s closed", t.proxyID)
-	t.cond.Broadcast()
+	t.mu.Unlock()
+	t.broadcast()
 	return nil
 }
 
@@ -289,6 +322,10 @@ func dialSSH(cfg pac.ExternalProxy) (*ssh.Client, error) {
 	return ssh.Dial("tcp", addr, sshCfg)
 }
 
+// dialSSHFunc is the function used by connectLoop to establish an SSH connection.
+// It defaults to dialSSH but can be overridden in tests.
+var dialSSHFunc = dialSSH
+
 // checkKeyFilePermissions warns if the key file has overly permissive permissions.
 func checkKeyFilePermissions(path string) {
 	info, err := os.Stat(path)
@@ -297,8 +334,8 @@ func checkKeyFilePermissions(path string) {
 	}
 	mode := info.Mode()
 	// On Unix, check if any permission bits outside owner exist
-	if mode&0077 != 0 {
-		log.Printf("[SSH] Warning: private key file %s has permissive permissions (%04o); recommended 0600", path, mode&0777)
+	if mode&0o077 != 0 {
+		log.Printf("[SSH] Warning: private key file %s has permissive permissions (%04o); recommended 0600", path, mode&0o777)
 	}
 }
 
