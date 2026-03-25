@@ -1,6 +1,16 @@
+// Package ssh provides SSH tunnel support for the proxy.
+//
+// Tunnel uses a manager goroutine and a worker pool to handle concurrent Dial
+// requests with zero lock contention in the hot path. The manager owns the SSH
+// client and handles (re)connection. Workers retrieve the client atomically and
+// perform Dial. Failures signal the manager via a non-blocking channel. Workers
+// listen on context cancellation to exit gracefully, eliminating the need for
+// channel closing. A condition variable coordinates workers waiting for the
+// initial connection. This design provides high throughput under load.
 package ssh
 
 import (
+	"context"
 	"encoding/hex"
 	"fmt"
 	"log"
@@ -21,6 +31,7 @@ import (
 var (
 	ErrTunnelClosed = fmt.Errorf("tunnel closed")
 	ErrPermanent    = fmt.Errorf("permanent failure")
+	ErrOverload     = fmt.Errorf("tunnel overloaded")
 
 	// dialSSHVal holds the function used to establish SSH connections.
 	// It is an atomic.Value to allow safe replacement in tests.
@@ -44,177 +55,173 @@ const (
 	stateReconnecting = "reconnecting"
 )
 
+// dialTask represents a request to dial through the tunnel.
+type dialTask struct {
+	dest     string
+	respChan chan<- dialResult
+}
+
+// dialResult is the result of a dial attempt.
+type dialResult struct {
+	conn net.Conn
+	err  error
+}
+
 // Tunnel represents a single SSH tunnel connection to a proxy.
+// Uses a worker pool pattern with atomic state to eliminate lock contention.
 type Tunnel struct {
-	mu            sync.Mutex
-	cfg           pac.ExternalProxy
-	client        *ssh.Client
-	state         string
-	backoff       time.Duration
-	closing       bool
-	connectedChan chan struct{} // closed to broadcast connected state
-	lastErr       error
-	proxyID       string
+	cfg     pac.ExternalProxy
+	proxyID string
+
+	// Atomic state (accessed via atomics)
+	client  atomic.Pointer[ssh.Client]
+	state   atomic.Value // string
+	closing atomic.Bool
+
+	// Channels
+	dialCh chan dialTask // buffered task queue
+	failCh chan struct{} // signals from workers that connection failed
+	ctx    context.Context
+	cancel context.CancelFunc
+
+	// Condition variable for workers to wait for connection
+	cond *sync.Cond
+
+	// Worker management
+	wg      sync.WaitGroup
+	backoff time.Duration // manager-only (protected by single-manager goroutine)
 }
 
 // NewTunnel creates a new Tunnel with the given configuration.
 func NewTunnel(cfg pac.ExternalProxy) *Tunnel {
+	const (
+		defaultWorkers = 8
+		dialBufSize    = 100
+		failBufSize    = 10
+	)
+
+	ctx, cancel := context.WithCancel(context.Background())
 	t := &Tunnel{
-		cfg:           cfg,
-		state:         stateClosed,
-		proxyID:       cfg.ID,
-		connectedChan: make(chan struct{}),
+		cfg:     cfg,
+		proxyID: cfg.ID,
+		dialCh:  make(chan dialTask, dialBufSize),
+		failCh:  make(chan struct{}, failBufSize),
+		ctx:     ctx,
+		cancel:  cancel,
+		cond:    sync.NewCond(&sync.Mutex{}),
 	}
+	t.state.Store(stateClosed)
+
+	// Start workers
+	for i := 0; i < defaultWorkers; i++ {
+		t.wg.Add(1)
+		go t.worker()
+	}
+
+	// Start manager
+	t.wg.Add(1)
+	go t.manager()
+
 	return t
 }
 
-// broadcast closes the current connectedChan and replaces it with a fresh one,
-// waking all waiters. It must be called with the mutex unlocked (it locks internally).
-func (t *Tunnel) broadcast() {
-	t.mu.Lock()
-	old := t.connectedChan
-	t.connectedChan = make(chan struct{})
-	t.mu.Unlock()
-	close(old)
-}
+// manager runs the connection lifecycle. It attempts initial connection and
+// listens for failCh signals to trigger reconnection. It does NOT process dial tasks.
+func (t *Tunnel) manager() {
+	defer t.wg.Done()
 
-// Dial establishes a connection through the tunnel to the destination.
-// It blocks until the tunnel is connected and the channel is opened, or an error occurs.
-// The timeout parameter bounds the total time including tunnel establishment.
-func (t *Tunnel) Dial(dest string, timeout time.Duration) (net.Conn, error) {
-	deadline := time.Now().Add(timeout)
+	// Initial connection attempt
+	t.connect()
+
+	// Listen for failure signals or shutdown
 	for {
-		t.mu.Lock()
-		if t.closing {
-			t.mu.Unlock()
-			return nil, ErrTunnelClosed
-		}
-
-		// Start connection if not already connected
-		if t.state == stateClosed {
-			t.state = stateConnecting
-			go t.connectLoop()
-		}
-
-		// Check if already connected
-		if t.client != nil && t.state == stateConnected {
-			t.mu.Unlock()
-			conn, err := t.client.Dial("tcp", dest)
-			if err != nil {
-				t.mu.Lock()
-				t.client.Close()
-				t.client = nil
-				t.state = stateReconnecting
-				t.lastErr = err
-				t.mu.Unlock()
-				t.broadcast()
-				continue
-			}
-			return conn, nil
-		}
-
-		if isPermanentError(t.lastErr) {
-			t.mu.Unlock()
-			t.broadcast()
-			return nil, t.lastErr
-		}
-
-		remaining := time.Until(deadline)
-		if remaining <= 0 {
-			t.mu.Unlock()
-			return nil, fmt.Errorf("dial timeout: %w", t.lastErr)
-		}
-
-		// Capture current notifier
-		notifier := t.connectedChan
-		t.mu.Unlock()
-
 		select {
-		case <-notifier:
-			continue
-		case <-time.After(remaining):
-			// Final check after timeout
-			t.mu.Lock()
-			if t.client != nil && t.state == stateConnected {
-				t.mu.Unlock()
-				conn, err := t.client.Dial("tcp", dest)
-				if err != nil {
-					t.mu.Lock()
-					t.client.Close()
-					t.client = nil
-					t.state = stateReconnecting
-					t.lastErr = err
-					t.mu.Unlock()
-					t.broadcast()
-					continue
-				}
-				return conn, nil
+		case <-t.failCh:
+			// Only reconnect if we believe we're connected (avoid reconnect storms)
+			if t.isConnected() {
+				t.connect()
 			}
-			t.mu.Unlock()
-			if t.lastErr != nil {
-				return nil, fmt.Errorf("dial timeout: %w", t.lastErr)
-			}
-			return nil, fmt.Errorf("dial timeout")
+		case <-t.ctx.Done():
+			return
 		}
 	}
 }
 
-// connectLoop runs in a goroutine and attempts to establish the SSH connection.
-func (t *Tunnel) connectLoop() {
+// isConnected is a fast lock-free check of connection state.
+func (t *Tunnel) isConnected() bool {
+	s := t.state.Load().(string)
+	client := t.client.Load()
+	return s == stateConnected && client != nil
+}
+
+// connect attempts to establish the SSH connection, with exponential backoff.
+// It runs in the manager goroutine only.
+func (t *Tunnel) connect() {
+	// If already connecting or connected, no need to connect again
+	current := t.state.Load().(string)
+	if current == stateConnecting || current == stateConnected {
+		return
+	}
+
 	for {
-		t.mu.Lock()
-		if t.closing {
-			t.mu.Unlock()
-			return
-		}
-		cfg := t.cfg
-		t.state = stateConnecting
-		t.lastErr = nil
-		t.mu.Unlock()
-
-		log.Printf("[SSH] Tunnel %s connecting to %s", t.proxyID, cfg.Address)
-		client, err := getDialSSH()(cfg)
-		t.mu.Lock()
-		if t.closing {
-			if client != nil {
-				client.Close()
-			}
-			t.mu.Unlock()
+		// Check for shutdown or permanent closure
+		if t.closing.Load() {
+			t.setState(stateClosed)
 			return
 		}
 
+		t.setState(stateConnecting)
+		log.Printf("[SSH] Tunnel %s connecting to %s", t.proxyID, t.cfg.Address)
+
+		client, err := getDialSSH()(t.cfg)
 		if err != nil {
-			t.client = nil
-			t.state = stateReconnecting
-			t.lastErr = err
-			log.Printf("[SSH] Tunnel %s connection failed: %v", t.proxyID, err)
 			if isPermanentError(err) {
-				t.closing = true
-			}
-			t.mu.Unlock()
-			t.broadcast()
-			if isPermanentError(err) {
+				t.closing.Store(true)
+				t.setState(stateClosed)
+				log.Printf("[SSH] Tunnel %s permanent failure: %v", t.proxyID, err)
 				return
 			}
+
+			// Transient error: wait with exponential backoff
 			backoff := t.computeBackoff()
-			log.Printf("[SSH] Tunnel %s reconnecting in %v", t.proxyID, backoff)
-			time.Sleep(backoff)
+			log.Printf("[SSH] Tunnel %s connection failed: %v; reconnecting in %v", t.proxyID, err, backoff)
+
+			// Wait with backoff, but respect context cancellation
+			select {
+			case <-time.After(backoff):
+				// continue retrying
+			case <-t.ctx.Done():
+				t.setState(stateClosed)
+				return
+			}
 			continue
 		}
 
-		// Success
-		t.client = client
+		// Success: atomically install new client
+		t.setClient(client)
+		t.setState(stateConnected)
 		t.backoff = 0
-		t.state = stateConnected
-		t.lastErr = nil
+		// Wake up any workers waiting for a connection
+		t.cond.Broadcast()
 		log.Printf("[SSH] Tunnel %s connected", t.proxyID)
-		t.mu.Unlock()
-		t.broadcast()
 		return
 	}
 }
 
-// computeBackoff returns exponential backoff with jitter.
+// setClient atomically replaces the current SSH client, closing any existing one.
+func (t *Tunnel) setClient(newClient *ssh.Client) {
+	old := t.client.Swap(newClient)
+	if old != nil {
+		old.Close()
+	}
+}
+
+// setState updates the atomic state string.
+func (t *Tunnel) setState(s string) {
+	t.state.Store(s)
+}
+
+// computeBackoff returns exponential backoff with jitter and updates t.backoff.
 func (t *Tunnel) computeBackoff() time.Duration {
 	backoff := t.backoff
 	if backoff == 0 {
@@ -231,22 +238,120 @@ func (t *Tunnel) computeBackoff() time.Duration {
 	return jitter
 }
 
-// Close shuts down the tunnel.
+// worker processes dial tasks from dialCh. It reads client atomically and
+// sends a non-blocking signal to failCh on errors.
+func (t *Tunnel) worker() {
+	defer t.wg.Done()
+	for {
+		select {
+		case task := <-t.dialCh:
+			// Check if tunnel is closing
+			if t.closing.Load() {
+				task.respChan <- dialResult{err: ErrTunnelClosed}
+				continue
+			}
+
+			// Get current client atomically
+			client := t.client.Load()
+			if client == nil {
+				// Wait for connection to be established or closing
+				t.cond.L.Lock()
+				for t.client.Load() == nil && !t.closing.Load() {
+					t.cond.Wait()
+				}
+				t.cond.L.Unlock()
+				client = t.client.Load()
+				if client == nil || t.closing.Load() {
+					task.respChan <- dialResult{err: ErrTunnelClosed}
+					continue
+				}
+			}
+
+			// Perform the dial
+			conn, err := client.Dial("tcp", task.dest)
+			if err != nil {
+				// Signal manager that connection is bad (non-blocking)
+				select {
+				case t.failCh <- struct{}{}:
+				default:
+				}
+				task.respChan <- dialResult{err: err}
+				continue
+			}
+
+			// Success
+			task.respChan <- dialResult{conn: conn, err: nil}
+		case <-t.ctx.Done():
+			return
+		}
+	}
+}
+
+// Dial establishes a connection through the tunnel to the destination.
+// It blocks until the connection is established or an error occurs, respecting timeout.
+// If the internal task queue is full, it returns ErrOverload immediately.
+func (t *Tunnel) Dial(dest string, timeout time.Duration) (net.Conn, error) {
+	// Build task
+	respChan := make(chan dialResult, 1)
+	task := dialTask{
+		dest:     dest,
+		respChan: respChan,
+	}
+
+	// Fast check: if closing, reject immediately
+	if t.closing.Load() {
+		return nil, ErrTunnelClosed
+	}
+
+	// Non-blocking enqueue with backpressure
+	select {
+	case t.dialCh <- task:
+		// queued
+	default:
+		return nil, ErrOverload
+	}
+
+	// Wait for result or timeout
+	deadline := time.Now().Add(timeout)
+	for {
+		select {
+		case result := <-respChan:
+			if result.err != nil {
+				return nil, result.err
+			}
+			return result.conn, nil
+		case <-time.After(time.Until(deadline)):
+			return nil, fmt.Errorf("dial timeout")
+		}
+	}
+}
+
+// Close shuts down the tunnel gracefully. It is safe to call multiple times.
 func (t *Tunnel) Close() error {
-	t.mu.Lock()
-	if t.closing {
-		t.mu.Unlock()
-		return nil
+	// Use CAS to ensure only one Close proceeds
+	if !t.closing.CompareAndSwap(false, true) {
+		return nil // already closing/closed
 	}
-	t.closing = true
-	if t.client != nil {
-		t.client.Close()
-		t.client = nil
+
+	// Wake any workers waiting for a connection
+	t.cond.Broadcast()
+
+	// Cancel manager and workers (they will exit upon ctx.Done())
+	t.cancel()
+
+	// Wait for all goroutines to exit
+	t.wg.Wait()
+
+	// Close the underlying SSH client if any
+	if client := t.client.Load(); client != nil {
+		client.Close()
+		t.client.Store(nil)
 	}
-	t.state = stateClosed
+
+	// Clear state
+	t.setState(stateClosed)
 	log.Printf("[SSH] Tunnel %s closed", t.proxyID)
-	t.mu.Unlock()
-	t.broadcast()
+
 	return nil
 }
 
@@ -321,10 +426,6 @@ func dialSSH(cfg pac.ExternalProxy) (*ssh.Client, error) {
 	addr := net.JoinHostPort(host, strconv.Itoa(port))
 	return ssh.Dial("tcp", addr, sshCfg)
 }
-
-// dialSSHFunc is the function used by connectLoop to establish an SSH connection.
-// It defaults to dialSSH but can be overridden in tests.
-var dialSSHFunc = dialSSH
 
 // checkKeyFilePermissions warns if the key file has overly permissive permissions.
 func checkKeyFilePermissions(path string) {

@@ -85,15 +85,15 @@ func TestTunnelDialConcurrent(t *testing.T) {
 
 // startTestSSHServer starts an SSH server on localhost with no client auth.
 // It returns the address and a cleanup function.
-func startTestSSHServer(t *testing.T) (addr string, cleanup func()) {
+func startTestSSHServer(tb testing.TB) (addr string, cleanup func()) {
 	// Generate an RSA key for the server
 	priv, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
-		t.Fatalf("failed to generate RSA key: %v", err)
+		tb.Fatalf("failed to generate RSA key: %v", err)
 	}
 	signer, err := ssh.NewSignerFromKey(priv)
 	if err != nil {
-		t.Fatalf("failed to create signer: %v", err)
+		tb.Fatalf("failed to create signer: %v", err)
 	}
 
 	serverConfig := &ssh.ServerConfig{}
@@ -102,7 +102,7 @@ func startTestSSHServer(t *testing.T) (addr string, cleanup func()) {
 
 	ln, err := net.Listen("tcp", "localhost:0")
 	if err != nil {
-		t.Fatalf("failed to listen: %v", err)
+		tb.Fatalf("failed to listen: %v", err)
 	}
 
 	go func() {
@@ -270,4 +270,44 @@ func TestTunnelCloseUnblocksWaiters(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("Dial did not return after Close")
 	}
+}
+
+// BenchmarkTunnelConcurrentDial measures the throughput of concurrent Dial calls
+// through a single SSH tunnel with the worker pool design.
+func BenchmarkTunnelConcurrentDial(b *testing.B) {
+	// Setup a mock SSH server
+	serverAddr, cleanup := startTestSSHServer(b)
+	defer cleanup()
+
+	// Override dialSSH to connect to our test server
+	orig := dialSSHVal.Load().(func(pac.ExternalProxy) (*ssh.Client, error))
+	defer dialSSHVal.Store(orig)
+
+	dialSSHVal.Store(func(cfg pac.ExternalProxy) (*ssh.Client, error) {
+		clientConfig := &ssh.ClientConfig{
+			User:            cfg.Username,
+			Auth:            []ssh.AuthMethod{},
+			HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+			Timeout:         30 * time.Second,
+		}
+		return ssh.Dial("tcp", serverAddr, clientConfig)
+	})
+
+	cfg := pac.ExternalProxy{ID: "bench", Kind: "ssh", Address: "ignored", AuthMethod: "password", Password: "ignored"}
+	tunnel := NewTunnel(cfg)
+	defer tunnel.Close()
+
+	// Wait for tunnel to be connected
+	time.Sleep(200 * time.Millisecond)
+
+	b.ResetTimer()
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			conn, err := tunnel.Dial("example.com:80", 5*time.Second)
+			if err != nil {
+				b.Fatalf("Dial failed: %v", err)
+			}
+			conn.Close()
+		}
+	})
 }

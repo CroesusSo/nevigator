@@ -1,10 +1,12 @@
 package ssh
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"net"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/yourorg/proxy-pac/pac"
@@ -58,24 +60,34 @@ func (m *Manager) UpdateProxies(proxies []pac.ExternalProxy) {
 // It respects the timeout. If the tunnel is not yet connected, Dial blocks until it connects
 // or fails permanently.
 func (m *Manager) Dial(id, dest string, timeout time.Duration) (net.Conn, error) {
-	// Get or create tunnel
+	m.mu.RLock()
+	_, ok := m.proxies[id]
+	m.mu.RUnlock()
+	if !ok {
+		return nil, fmt.Errorf("SSH proxy %s not configured", id)
+	}
 	tunnel := m.getOrCreateTunnel(id)
 	return tunnel.Dial(dest, timeout)
 }
 
 // getOrCreateTunnel returns the tunnel for the given proxy ID, creating it if needed.
+// This is used internally and by tests.
 func (m *Manager) getOrCreateTunnel(id string) *Tunnel {
 	m.mu.RLock()
 	cfg, ok := m.proxies[id]
 	m.mu.RUnlock()
 	if !ok {
-		// Return a nil tunnel that always fails
-		return &Tunnel{
+		// Return a tunnel that is already closing to fail fast
+		ctx, cancel := context.WithCancel(context.Background())
+		t := &Tunnel{
 			cfg:     pac.ExternalProxy{ID: id},
-			state:   stateClosed,
-			closing: true,
-			lastErr: fmt.Errorf("SSH proxy %s not configured", id),
+			ctx:     ctx,
+			cancel:  cancel,
+			closing: atomic.Bool{},
 		}
+		t.state.Store(stateClosed)
+		t.closing.Store(true)
+		return t
 	}
 
 	m.mu.Lock()
@@ -107,22 +119,18 @@ func (m *Manager) GetTunnelsStatus() map[string]status.SSHTunnelStatus {
 	defer m.mu.RUnlock()
 	result := make(map[string]status.SSHTunnelStatus, len(m.tunnels))
 	for id, tunnel := range m.tunnels {
-		tunnel.mu.Lock()
-		state := tunnel.state
-		lastErr := ""
-		if tunnel.lastErr != nil {
-			lastErr = tunnel.lastErr.Error()
-		}
+		// Read atomic state
+		state := tunnel.state.Load().(string)
+		client := tunnel.client.Load()
 		remoteAddr := ""
-		if tunnel.client != nil {
-			remoteAddr = tunnel.client.RemoteAddr().String()
+		if client != nil {
+			remoteAddr = client.RemoteAddr().String()
 		} else {
 			remoteAddr = tunnel.cfg.Address
 		}
-		tunnel.mu.Unlock()
 		result[id] = status.SSHTunnelStatus{
 			State:      state,
-			LastError:  lastErr,
+			LastError:  "", // not tracked in new design
 			RemoteAddr: remoteAddr,
 		}
 	}

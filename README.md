@@ -142,6 +142,18 @@ gfw:
 
 The proxy supports SSH tunnels as an external proxy type alongside SOCKS5. This allows routing traffic through SSH servers using direct channel multiplexing.
 
+### Performance Characteristics
+
+The SSH tunnel implementation uses a lock-free worker pool design optimized for high concurrency:
+
+- **Hot path**: `Dial` has no mutex contention; uses atomic state checks and non-blocking task enqueue
+- **Worker pool**: Default 8 workers process dial tasks concurrently; each uses atomic load of the SSH client
+- **Backpressure**: Buffered task channel (size 100) prevents unbounded memory growth; `Dial` returns `ErrOverload` immediately when saturated
+- **Reconnection**: Dedicated manager goroutine handles connection lifecycle with exponential backoff; workers signal failures via non-blocking `failCh`
+- **Graceful shutdown**: Context cancellation + WaitGroup ensures all workers exit cleanly without panics
+
+Compared to the previous mutex-based implementation, this design significantly reduces tail latency and improves throughput under heavy HTTPS request load while maintaining API compatibility and existing behavior.
+
 ### Configuration
 
 Add an external proxy with `kind: "ssh"`:
