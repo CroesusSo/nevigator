@@ -60,13 +60,10 @@ func (m *Manager) UpdateProxies(proxies []pac.ExternalProxy) {
 // It respects the timeout. If the tunnel is not yet connected, Dial blocks until it connects
 // or fails permanently.
 func (m *Manager) Dial(id, dest string, timeout time.Duration) (net.Conn, error) {
-	m.mu.RLock()
-	_, ok := m.proxies[id]
-	m.mu.RUnlock()
-	if !ok {
+	tunnel := m.getOrCreateTunnel(id)
+	if tunnel == nil {
 		return nil, fmt.Errorf("SSH proxy %s not configured", id)
 	}
-	tunnel := m.getOrCreateTunnel(id)
 	return tunnel.Dial(dest, timeout)
 }
 
