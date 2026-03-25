@@ -925,24 +925,75 @@ func (h *Handler) handleListProxies(w http.ResponseWriter, r *http.Request) {
 			"has_auth": (p.Username != "" || p.Password != ""),
 		}
 	}
+	// Add keepalive fields to each proxy entry
+	for i, p := range cfg.Proxy.ExternalProxies {
+		keepaliveInterval := ""
+		if p.Keepalive.Interval > 0 {
+			keepaliveInterval = p.Keepalive.Interval.String()
+		}
+		proxies[i]["keepalive_enabled"] = p.Keepalive.Enabled
+		proxies[i]["keepalive_interval"] = keepaliveInterval
+	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(proxies)
 }
 
 // handleCreateProxy adds a new external proxy.
 func (h *Handler) handleCreateProxy(w http.ResponseWriter, r *http.Request) {
-	var newProxy pac.ExternalProxy
-	if err := json.NewDecoder(r.Body).Decode(&newProxy); err != nil {
+	var req struct {
+		ID                 string `json:"id"`
+		Address            string `json:"address"`
+		Username           string `json:"username"`
+		Password           string `json:"password"`
+		Kind               string `json:"kind"`
+		SSHPort            int    `json:"ssh_port"`
+		AuthMethod         string `json:"auth_method"`
+		PrivateKeyPath     string `json:"private_key_path"`
+		HostKeyCheck       string `json:"host_key_check"`
+		HostKeyFingerprint string `json:"host_key_fingerprint"`
+		KeepaliveEnabled   *bool  `json:"keepalive_enabled"`
+		KeepaliveInterval  string `json:"keepalive_interval"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "Invalid JSON", http.StatusBadRequest)
 		return
 	}
-	if newProxy.ID == "" {
+	if req.ID == "" {
 		http.Error(w, "id is required", http.StatusBadRequest)
 		return
 	}
-	if newProxy.Address == "" {
+	if req.Address == "" {
 		http.Error(w, "address is required", http.StatusBadRequest)
 		return
+	}
+	// Build proxy
+	newProxy := pac.ExternalProxy{
+		ID:                 req.ID,
+		Address:            req.Address,
+		Username:           req.Username,
+		Password:           req.Password,
+		Kind:               req.Kind,
+		SSHPort:            req.SSHPort,
+		AuthMethod:         req.AuthMethod,
+		PrivateKeyPath:     req.PrivateKeyPath,
+		HostKeyCheck:       req.HostKeyCheck,
+		HostKeyFingerprint: req.HostKeyFingerprint,
+	}
+	// Apply keepalive if any field provided
+	if req.KeepaliveEnabled != nil || req.KeepaliveInterval != "" {
+		newProxy.Keepalive = pac.KeepaliveConfig{}
+		if req.KeepaliveEnabled != nil {
+			newProxy.Keepalive.Enabled = *req.KeepaliveEnabled
+		}
+		if req.KeepaliveInterval != "" {
+			if d, err := time.ParseDuration(req.KeepaliveInterval); err == nil {
+				newProxy.Keepalive.Interval = d
+			}
+		}
+	}
+	// Ensure default if enabled and interval zero
+	if newProxy.Keepalive.Enabled && newProxy.Keepalive.Interval == 0 {
+		newProxy.Keepalive.Interval = 30 * time.Second
 	}
 	// Validate address format and loop prevention
 	status := h.statusProvider.Status()
@@ -992,10 +1043,16 @@ func (h *Handler) handleCreateProxy(w http.ResponseWriter, r *http.Request) {
 	// Respond
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
+	keepaliveInterval := ""
+	if newProxy.Keepalive.Interval > 0 {
+		keepaliveInterval = newProxy.Keepalive.Interval.String()
+	}
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"id":       newProxy.ID,
-		"address":  newProxy.Address,
-		"has_auth": (newProxy.Username != "" || newProxy.Password != ""),
+		"id":                 newProxy.ID,
+		"address":            newProxy.Address,
+		"has_auth":           (newProxy.Username != "" || newProxy.Password != ""),
+		"keepalive_enabled":  newProxy.Keepalive.Enabled,
+		"keepalive_interval": keepaliveInterval,
 	})
 }
 
@@ -1210,6 +1267,8 @@ func (h *Handler) handleUpdateProxy(w http.ResponseWriter, r *http.Request, id s
 		PrivateKeyPath     string `json:"private_key_path"`
 		HostKeyCheck       string `json:"host_key_check"`
 		HostKeyFingerprint string `json:"host_key_fingerprint"`
+		KeepaliveEnabled   *bool  `json:"keepalive_enabled"`
+		KeepaliveInterval  string `json:"keepalive_interval"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&upd); err != nil {
 		http.Error(w, "Invalid JSON", http.StatusBadRequest)
@@ -1248,6 +1307,19 @@ func (h *Handler) handleUpdateProxy(w http.ResponseWriter, r *http.Request, id s
 	}
 	if upd.HostKeyFingerprint != "" {
 		proxy.HostKeyFingerprint = upd.HostKeyFingerprint
+	}
+	// Apply keepalive updates if provided
+	if upd.KeepaliveEnabled != nil {
+		proxy.Keepalive.Enabled = *upd.KeepaliveEnabled
+	}
+	if upd.KeepaliveInterval != "" {
+		if d, err := time.ParseDuration(upd.KeepaliveInterval); err == nil {
+			proxy.Keepalive.Interval = d
+		}
+	}
+	// Ensure keepalive defaults if needed
+	if proxy.Keepalive.Enabled && proxy.Keepalive.Interval == 0 {
+		proxy.Keepalive.Interval = 30 * time.Second
 	}
 	// Validate SSH configuration
 	if err := validateSSHProxy(&proxy); err != nil {

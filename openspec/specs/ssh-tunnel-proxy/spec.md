@@ -13,8 +13,11 @@ The system SHALL support SSH tunnels as an external proxy type alongside SOCKS5.
   - `username` (if not extracted from `address`'s `user@` prefix)
   - `auth_method`: either `"password"` or `"key"`
   - For `"password"` auth: `password` field required
-  - For `"key"` auth: `private_key_path` field required (path to unencrypted PEM private key)
-- **AND** optionally support `host_key_check` (`"strict"`, `"ignore"`) and `host_key_fingerprint` for pinning
+   - For `"key"` auth: `private_key_path` field required (path to unencrypted PEM private key)
+ - **AND** optionally support `host_key_check` (`"strict"`, `"ignore"`) and `host_key_fingerprint` for pinning
+ - **AND** optionally support keepalive configuration with fields:
+   - `keepalive.enabled` (boolean, default false)
+   - `keepalive.interval` (duration, e.g., "30s", default 30s)
 
 #### Scenario: Router uses SSH proxy
 - **GIVEN** a PAC rule returns `"EXTERNAL my-ssh-proxy"`
@@ -105,6 +108,21 @@ The system SHALL support SSH tunnels as an external proxy type alongside SOCKS5.
 - **AND** all existing SOCKS5 proxies SHALL continue to work unchanged
 - **AND** older binaries (without `kind` support) SHALL ignore the field and treat SSH proxies as SOCKS5, causing connection failures but not crashes
 
+#### Scenario: SSH keepalive heartbeat
+- **GIVEN** an SSH proxy with `keepalive.enabled = true` and `keepalive.interval` set
+- **WHEN** the tunnel enters `connected` state
+- **THEN** the tunnel SHALL start a keepalive goroutine
+- **AND** every `keepalive.interval`, the goroutine SHALL send a global SSH request `"keepalive@openssh.com"` with `wantReply=true`
+- **AND** wait up to 5 seconds for a response (per-ping timeout)
+- **IF** the request returns an error (including timeout)
+- **THEN** the failure count SHALL increment
+- **IF** consecutive failures reach 3
+- **THEN** the keepalive goroutine SHALL close the SSH connection
+- **AND** the tunnel SHALL enter `reconnecting` state
+- **AND** the manager SHALL begin exponential backoff reconnection
+- **WHEN** a keepalive succeeds
+- **THEN** the consecutive failure count SHALL reset to zero
+
 ### Requirement: SSH tunnel worker pool implementation
 
 The system SHALL replace the mutex-based `ssh.Tunnel` implementation with a worker-pool, atomic-state design that eliminates lock contention in the hot path while preserving the public API and all existing observable behaviors.
@@ -121,3 +139,12 @@ The system SHALL replace the mutex-based `ssh.Tunnel` implementation with a work
 - **WHEN** a high volume of concurrent HTTPS requests route through an SSH tunnel
 - **THEN** the system SHALL demonstrate reduced tail latency and higher throughput compared to the mutex-based implementation
 - **AND** no deadlocks or data races SHALL occur under load
+
+### Requirement: TCP keepalive for SSH connections
+
+The system SHALL enable TCP-level keepalive on all SSH tunnel connections to detect dead links at the transport layer.
+
+#### Scenario: TCP keepalive enabled on SSH connections
+- **WHEN** an SSH tunnel establishes a new TCP connection
+- **THEN** the connection SHALL have `SO_KEEPALIVE` enabled
+- **AND** the TCP keepalive interval SHALL be set to 30 seconds

@@ -57,6 +57,7 @@ node_modules/
 bower_components/
 
 # Build outputs
+proxy-pac
 bin/
 build/
 dist/

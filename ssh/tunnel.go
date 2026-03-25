@@ -90,6 +90,11 @@ type Tunnel struct {
 	// Worker management
 	wg      sync.WaitGroup
 	backoff time.Duration // manager-only (protected by single-manager goroutine)
+
+	// Keepalive management
+	keepaliveCtx      context.Context
+	keepaliveCancel   context.CancelFunc
+	keepaliveFailures int32 // atomic access
 }
 
 // NewTunnel creates a new Tunnel with the given configuration.
@@ -210,15 +215,102 @@ func (t *Tunnel) connect() {
 
 // setClient atomically replaces the current SSH client, closing any existing one.
 func (t *Tunnel) setClient(newClient *ssh.Client) {
+	// Stop keepalive on old connection before swap
+	t.stopKeepalive()
+
 	old := t.client.Swap(newClient)
 	if old != nil {
 		old.Close()
+	}
+
+	// Start keepalive on new connection if enabled
+	if t.cfg.Keepalive.Enabled && newClient != nil {
+		atomic.StoreInt32(&t.keepaliveFailures, 0) // reset counter
+		// Apply default interval if not set
+		if t.cfg.Keepalive.Interval == 0 {
+			t.cfg.Keepalive.Interval = 30 * time.Second
+		}
+		t.startKeepalive(newClient)
 	}
 }
 
 // setState updates the atomic state string.
 func (t *Tunnel) setState(s string) {
 	t.state.Store(s)
+}
+
+// keepaliveLoop runs in its own goroutine and sends periodic keepalive probes.
+func (t *Tunnel) keepaliveLoop(ctx context.Context, client *ssh.Client) {
+	ticker := time.NewTicker(t.cfg.Keepalive.Interval)
+	defer ticker.Stop()
+
+	// Ping timeout: 5 seconds
+	pingTimeout := 5 * time.Second
+	// Max consecutive failures before reconnect
+	const maxFailures = 3
+
+	for {
+		select {
+		case <-ctx.Done():
+			// Stop requested
+			return
+		case <-ticker.C:
+			// Create child context for this ping with timeout
+			pingCtx, cancel := context.WithTimeout(ctx, pingTimeout)
+			errCh := make(chan error, 1)
+
+			// Launch goroutine to send keepalive (this may block)
+			go func() {
+				_, _, err := client.SendRequest("keepalive@openssh.com", true, nil)
+				errCh <- err
+			}()
+
+			var err error
+			select {
+			case err = <-errCh:
+				// Keepalive response received (success or error)
+			case <-pingCtx.Done():
+				// Ping timed out
+				err = pingCtx.Err()
+			}
+			cancel() // Clean up child context
+
+			if err != nil {
+				log.Printf("[SSH] Tunnel %s keepalive failed: %v", t.proxyID, err)
+				atomic.AddInt32(&t.keepaliveFailures, 1)
+				failures := atomic.LoadInt32(&t.keepaliveFailures)
+				if failures >= maxFailures {
+					log.Printf("[SSH] Tunnel %s keepalive failed %d times; closing connection", t.proxyID, failures)
+					client.Close() // Trigger reconnection via failCh
+					return
+				}
+			} else {
+				// Success: reset failure counter
+				atomic.StoreInt32(&t.keepaliveFailures, 0)
+			}
+		}
+	}
+}
+
+// startKeepalive begins the keepalive goroutine for the current client.
+func (t *Tunnel) startKeepalive(client *ssh.Client) {
+	if t.cfg.Keepalive.Enabled && t.cfg.Keepalive.Interval > 0 {
+		t.keepaliveCtx, t.keepaliveCancel = context.WithCancel(t.ctx)
+		t.wg.Add(1)
+		go func() {
+			defer t.wg.Done()
+			t.keepaliveLoop(t.keepaliveCtx, client)
+		}()
+		log.Printf("[SSH] Tunnel %s keepalive started (interval: %v)", t.proxyID, t.cfg.Keepalive.Interval)
+	}
+}
+
+// stopKeepalive stops the keepalive goroutine if running.
+func (t *Tunnel) stopKeepalive() {
+	if t.keepaliveCancel != nil {
+		t.keepaliveCancel()
+		t.keepaliveCancel = nil
+	}
 }
 
 // computeBackoff returns exponential backoff with jitter and updates t.backoff.
@@ -339,6 +431,9 @@ func (t *Tunnel) Close() error {
 	// Cancel manager and workers (they will exit upon ctx.Done())
 	t.cancel()
 
+	// Stop keepalive explicitly to clean up
+	t.stopKeepalive()
+
 	// Wait for all goroutines to exit
 	t.wg.Wait()
 
@@ -424,7 +519,27 @@ func dialSSH(cfg pac.ExternalProxy) (*ssh.Client, error) {
 	}
 
 	addr := net.JoinHostPort(host, strconv.Itoa(port))
-	return ssh.Dial("tcp", addr, sshCfg)
+
+	// Use custom dialer with TCP keepalive
+	dialer := &net.Dialer{
+		Timeout:   sshCfg.Timeout,
+		KeepAlive: 30 * time.Second,
+	}
+	conn, err := dialer.Dial("tcp", addr)
+	if err != nil {
+		return nil, fmt.Errorf("tcp dial failed: %w", err)
+	}
+
+	// Perform SSH handshake on the connection
+	sshConn, chans, reqs, err := ssh.NewClientConn(conn, addr, sshCfg)
+	if err != nil {
+		conn.Close()
+		return nil, fmt.Errorf("ssh handshake failed: %w", err)
+	}
+
+	// Wrap into ssh.Client
+	client := ssh.NewClient(sshConn, chans, reqs)
+	return client, nil
 }
 
 // checkKeyFilePermissions warns if the key file has overly permissive permissions.

@@ -176,6 +176,32 @@ proxy:
 - For `"key"`: `private_key_path` required (unencrypted PEM)
 - `host_key_check`: `"strict"` (default) or `"ignore"`. With `"strict"`, the system uses `~/.ssh/known_hosts` or a provided `host_key_fingerprint` (hex) for pinning.
 
+### Keepalive (Heartbeat)
+
+The SSH tunnel supports an optional keepalive heartbeat to detect silent connection failures. When enabled, the tunnel periodically sends SSH global keepalive requests to the server. If the server fails to respond after 3 consecutive attempts, the connection is closed and automatically reconnected.
+
+Configuration in `config.yaml` under the external proxy's `keepalive` field:
+
+```yaml
+proxy:
+  external_proxies:
+    - id: "ssh-keepalive"
+      kind: "ssh"
+      address: "user@ssh.example.com:22"
+      auth_method: "password"
+      password: "secret"
+      keepalive:
+        enabled: true
+        interval: 30s
+```
+
+- `enabled`: Turn keepalive on or off. Disabled by default.
+- `interval`: How often to send keepalive probes. Default is `30s` when keepalive is enabled and interval is not set or is zero.
+
+The keepalive uses SSH's `"keepalive@openssh.com"` global request with a per-ping timeout of 5 seconds. It runs in a dedicated goroutine per tunnel and does not block worker dial operations.
+
+The keepalive settings are also available in the **Admin UI** → Proxies tab when creating or editing an SSH tunnel.
+
 The admin UI's Proxies tab supports creating and testing SSH proxies. See the [External Proxy Registry spec](../openspec/specs/external-proxy-registry/spec.md) for full details.
 
 ## PAC Script Format

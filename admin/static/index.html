@@ -171,23 +171,24 @@
 
        <div class="card">
          <h3>Upstream Proxies</h3>
-         <table>
-           <thead>
-             <tr>
-               <th>ID</th>
-               <th>Address</th>
-               <th>Auth</th>
-               <th>Actions</th>
-             </tr>
-           </thead>
-           <tbody id="proxies-body"></tbody>
-         </table>
-          <button class="btn btn-primary" style="margin-top:1rem; margin-right:0.5rem;" onclick="showAddSocks5Modal()">Add SOCKS5 Proxy</button>
-          <button class="btn btn-primary" style="margin-top:1rem;" onclick="showAddSSHModal()">Add SSH Tunnel</button>
-       </div>
-     </div>
+          <table>
+            <thead>
+              <tr>
+                <th>ID</th>
+                <th>Address</th>
+                <th>Auth</th>
+                <th>Keepalive</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody id="proxies-body"></tbody>
+          </table>
+           <button class="btn btn-primary" style="margin-top:1rem; margin-right:0.5rem;" onclick="showAddSocks5Modal()">Add SOCKS5 Proxy</button>
+           <button class="btn btn-primary" style="margin-top:1rem;" onclick="showAddSSHModal()">Add SSH Tunnel</button>
+        </div>
+      </div>
 
-       <!-- Add SOCKS5 Proxy Modal -->
+    <!-- Add SSH Tunnel Modal -->
        <div id="add-socks5-modal" style="display:none; position:fixed; top:50%; left:50%; transform:translate(-50%,-50%); background:white; padding:2rem; border:1px solid #ccc; box-shadow:0 4px 16px rgba(0,0,0,0.2); z-index:1000; min-width:400px;">
          <h3>Add SOCKS5 Proxy</h3>
          <div class="form-row">
@@ -251,17 +252,22 @@
            <label>Private Key Path</label>
            <input id="new-ssh-private-key-path" placeholder="/path/to/key.pem">
          </div>
-         <div class="form-row">
-           <label>Host Key Check</label>
-           <select id="new-ssh-host-key-check">
-             <option value="strict">Strict (known_hosts)</option>
-             <option value="ignore">Ignore (insecure)</option>
-           </select>
-         </div>
-         <div class="form-row">
-           <button class="btn btn-secondary" onclick="testNewSSHProxy()">Test</button>
-           <span id="new-ssh-test-result" style="margin-left:1rem;"></span>
-         </div>
+          <div class="form-row">
+            <label>Host Key Check</label>
+            <select id="new-ssh-host-key-check">
+              <option value="strict">Strict (known_hosts)</option>
+              <option value="ignore">Ignore (insecure)</option>
+            </select>
+          </div>
+          <div class="form-row">
+            <label>Keepalive</label>
+            <input type="checkbox" id="new-ssh-keepalive-enabled">
+            <span style="margin-left: 1rem;">Interval: <input id="new-ssh-keepalive-interval" placeholder="30s" style="width: 100px;"></span>
+          </div>
+          <div class="form-row">
+            <button class="btn btn-secondary" onclick="testNewSSHProxy()">Test</button>
+            <span id="new-ssh-test-result" style="margin-left:1rem;"></span>
+          </div>
          <div class="form-row" style="margin-top:1rem;">
            <button class="btn btn-primary" id="save-new-ssh-btn" onclick="saveNewSSHProxy()" disabled>Save</button>
            <button class="btn" onclick="closeAddSSHModal()">Cancel</button>

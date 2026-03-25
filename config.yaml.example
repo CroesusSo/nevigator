@@ -4,8 +4,23 @@ proxy:
   admin_listen: 127.0.0.1:9090
   pac_path: /etc/proxy.pac
   tun_device: tun0
-  default_external_proxy: ""  # optional, ID from external_proxies
-  external_proxies: []        # list of external SOCKS5 proxies with optional credentials
+   default_external_proxy: ""  # optional, ID from external_proxies
+   # Example external proxy configurations (uncomment and customize):
+   # external_proxies:
+   #   - id: "ssh-us"
+   #     kind: "ssh"
+   #     address: "user@ssh.example.com:22"
+   #     auth_method: "password"
+   #     password: "your_password"
+   #     keepalive:
+   #       enabled: true
+   #       interval: 30s
+   #   - id: "socks5-tw"
+   #     kind: "socks5"
+   #     address: "socks5.example.com:1080"
+   #     username: "user"
+   #     password: "pass"
+   external_proxies: []        # list of external SOCKS5/SSH proxies
 
 pac:
   local_ip: ""            # auto-discovered from tun0

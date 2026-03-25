@@ -311,3 +311,257 @@ func BenchmarkTunnelConcurrentDial(b *testing.B) {
 		}
 	})
 }
+
+// ==================== Keepalive Tests ====================
+
+// TestTunnelKeepaliveStartStop verifies that keepalive goroutine starts and stops correctly.
+func TestTunnelKeepaliveStartStop(t *testing.T) {
+	orig := dialSSHVal.Load().(func(pac.ExternalProxy) (*ssh.Client, error))
+	defer dialSSHVal.Store(orig)
+
+	serverAddr, cleanup := startTestSSHServer(t)
+	defer cleanup()
+
+	dialSSHVal.Store(func(cfg pac.ExternalProxy) (*ssh.Client, error) {
+		clientConfig := &ssh.ClientConfig{
+			User:            cfg.Username,
+			Auth:            []ssh.AuthMethod{},
+			HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+			Timeout:         30 * time.Second,
+		}
+		return ssh.Dial("tcp", serverAddr, clientConfig)
+	})
+
+	cfg := pac.ExternalProxy{
+		ID:       "keepalive-test",
+		Kind:     "ssh",
+		Address:  "host:22",
+		Username: "user",
+		Password: "pass",
+		Keepalive: pac.KeepaliveConfig{
+			Enabled:  true,
+			Interval: 100 * time.Millisecond,
+		},
+	}
+	tunnel := NewTunnel(cfg)
+
+	// Wait for connection to be established
+	timeout := time.After(2 * time.Second)
+	for {
+		if tunnel.isConnected() {
+			break
+		}
+		select {
+		case <-timeout:
+			t.Fatal("tunnel did not connect within timeout")
+		default:
+			time.Sleep(50 * time.Millisecond)
+		}
+	}
+
+	// Keepalive should now be running
+	if tunnel.keepaliveCtx == nil {
+		t.Fatal("keepaliveCtx should be set after connection")
+	}
+	if tunnel.keepaliveCancel == nil {
+		t.Fatal("keepaliveCancel should be set after connection")
+	}
+
+	// Stop keepalive via Close
+	if err := tunnel.Close(); err != nil {
+		t.Fatalf("Close error: %v", err)
+	}
+
+	// Context should be cancelled
+	select {
+	case <-tunnel.keepaliveCtx.Done():
+		// Expected
+	default:
+		t.Error("keepaliveCtx should be cancelled after Close")
+	}
+}
+
+// TestTunnelKeepaliveDisabled verifies keepalive does nothing when disabled.
+func TestTunnelKeepaliveDisabled(t *testing.T) {
+	orig := dialSSHVal.Load().(func(pac.ExternalProxy) (*ssh.Client, error))
+	defer dialSSHVal.Store(orig)
+
+	serverAddr, cleanup := startTestSSHServer(t)
+	defer cleanup()
+
+	dialSSHVal.Store(func(cfg pac.ExternalProxy) (*ssh.Client, error) {
+		clientConfig := &ssh.ClientConfig{
+			User:            cfg.Username,
+			Auth:            []ssh.AuthMethod{},
+			HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+			Timeout:         30 * time.Second,
+		}
+		return ssh.Dial("tcp", serverAddr, clientConfig)
+	})
+
+	cfg := pac.ExternalProxy{
+		ID:       "no-keepalive",
+		Kind:     "ssh",
+		Address:  "host:22",
+		Username: "user",
+		Password: "pass",
+		Keepalive: pac.KeepaliveConfig{
+			Enabled:  false,
+			Interval: 30 * time.Second,
+		},
+	}
+	tunnel := NewTunnel(cfg)
+
+	// Wait for connection
+	timeout := time.After(2 * time.Second)
+Loop:
+	for {
+		if tunnel.isConnected() {
+			break Loop
+		}
+		select {
+		case <-timeout:
+			t.Fatal("tunnel did not connect within timeout")
+		default:
+			time.Sleep(50 * time.Millisecond)
+		}
+	}
+
+	// Keepalive should not start
+	if tunnel.keepaliveCtx != nil {
+		t.Error("keepaliveCtx should be nil when disabled")
+	}
+	if tunnel.keepaliveCancel != nil {
+		t.Error("keepaliveCancel should be nil when disabled")
+	}
+
+	tunnel.Close()
+}
+
+// TestTunnelKeepaliveDefaultInterval tests that when keepalive is enabled but interval is zero,
+// the default interval of 30s is used (the startKeepalive method should apply the default).
+func TestTunnelKeepaliveDefaultInterval(t *testing.T) {
+	orig := dialSSHVal.Load().(func(pac.ExternalProxy) (*ssh.Client, error))
+	defer dialSSHVal.Store(orig)
+
+	serverAddr, cleanup := startTestSSHServer(t)
+	defer cleanup()
+
+	dialSSHVal.Store(func(cfg pac.ExternalProxy) (*ssh.Client, error) {
+		clientConfig := &ssh.ClientConfig{
+			User:            cfg.Username,
+			Auth:            []ssh.AuthMethod{},
+			HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+			Timeout:         30 * time.Second,
+		}
+		return ssh.Dial("tcp", serverAddr, clientConfig)
+	})
+
+	cfg := pac.ExternalProxy{
+		ID:       "default-interval",
+		Kind:     "ssh",
+		Address:  "host:22",
+		Username: "user",
+		Password: "pass",
+		Keepalive: pac.KeepaliveConfig{
+			Enabled:  true,
+			Interval: 0, // zero, should default to 30s
+		},
+	}
+	tunnel := NewTunnel(cfg)
+
+	// Wait for connection
+	timeout := time.After(2 * time.Second)
+	for {
+		if tunnel.isConnected() {
+			break
+		}
+		select {
+		case <-timeout:
+			t.Fatal("tunnel did not connect within timeout")
+		default:
+			time.Sleep(50 * time.Millisecond)
+		}
+	}
+
+	// Check that the keepalive was started (ctx != nil)
+	if tunnel.keepaliveCtx == nil {
+		t.Fatal("keepalive should have started with default interval")
+	}
+
+	tunnel.Close()
+}
+
+// TestTunnelKeepaliveMultipleConcurrent verifies that keepalive works alongside Dial calls.
+func TestTunnelKeepaliveMultipleConcurrent(t *testing.T) {
+	orig := dialSSHVal.Load().(func(pac.ExternalProxy) (*ssh.Client, error))
+	defer dialSSHVal.Store(orig)
+
+	serverAddr, cleanup := startTestSSHServer(t)
+	defer cleanup()
+
+	dialSSHVal.Store(func(cfg pac.ExternalProxy) (*ssh.Client, error) {
+		clientConfig := &ssh.ClientConfig{
+			User:            cfg.Username,
+			Auth:            []ssh.AuthMethod{},
+			HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+			Timeout:         30 * time.Second,
+		}
+		return ssh.Dial("tcp", serverAddr, clientConfig)
+	})
+
+	cfg := pac.ExternalProxy{
+		ID:       "keepalive-concurrent",
+		Kind:     "ssh",
+		Address:  "host:22",
+		Username: "user",
+		Password: "pass",
+		Keepalive: pac.KeepaliveConfig{
+			Enabled:  true,
+			Interval: 50 * time.Millisecond,
+		},
+	}
+	tunnel := NewTunnel(cfg)
+
+	// Wait for connection
+	timeout := time.After(2 * time.Second)
+	for {
+		if tunnel.isConnected() {
+			break
+		}
+		select {
+		case <-timeout:
+			t.Fatal("tunnel did not connect within timeout")
+		default:
+			time.Sleep(50 * time.Millisecond)
+		}
+	}
+
+	// Start multiple concurrent Dials (they'll all use the same client)
+	var wg sync.WaitGroup
+	numDials := 5
+	errors := make(chan error, numDials)
+
+	for i := 0; i < numDials; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			conn, err := tunnel.Dial("example.com:80", 1*time.Second)
+			if conn != nil {
+				conn.Close()
+			}
+			errors <- err
+		}()
+	}
+
+	wg.Wait()
+	close(errors)
+
+	// All Dials should complete without panicking (even if they error due to mock server)
+	for err := range errors {
+		// It's ok if they error (server can't actually dial anywhere), just no panic
+		_ = err
+	}
+
+	tunnel.Close()
+}

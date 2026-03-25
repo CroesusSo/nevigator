@@ -15,6 +15,9 @@ Additionally, the following SSH-specific fields SHALL be added (ignored if `kind
 - `private_key_path`: string (required if `auth_method == "key"`)
 - `host_key_check`: string, either `"strict"` (default) or `"ignore"`
 - `host_key_fingerprint`: optional string (hex) for pinning
+- `keepalive`: optional object with fields:
+  - `enabled`: boolean, default false
+  - `interval`: duration string (e.g., "30s"), default "30s" when enabled
 
 The existing `address` field SHALL be interpreted differently based on `kind`:
 - For `socks5`: `host:port` of the SOCKS5 server (as before)
@@ -85,6 +88,9 @@ proxy:
       auth_method: "key"
       private_key_path: "/etc/keys/id_rsa"
       host_key_check: "strict"
+      keepalive:
+        enabled: true
+        interval: 30s
 ```
 
 ### Impact on Existing Scenarios
