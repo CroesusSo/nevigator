@@ -2,7 +2,10 @@ package pac
 
 import (
 	"encoding/json"
+	"fmt"
 	"time"
+
+	"gopkg.in/yaml.v3"
 )
 
 // TLSConfig holds TLS configuration for the proxy server.
@@ -49,40 +52,52 @@ type KeepaliveConfig struct {
 	Interval time.Duration `yaml:"interval" json:"interval"` // How often to send keepalive probes (e.g., "30s")
 }
 
-// UnmarshalYAML implements YAML unmarshaling for KeepaliveConfig with defaults.
-func (c *KeepaliveConfig) UnmarshalYAML(unmarshal func(interface{}) error) error {
-	// Define a temporary alias to avoid infinite recursion
-	type plain KeepaliveConfig
-	aux := &struct {
-		*plain
-	}{
-		plain: (*plain)(c),
-	}
-	if err := unmarshal(aux); err != nil {
+func (k *KeepaliveConfig) UnmarshalYAML(value *yaml.Node) error {
+	// 1. Define an alias to avoid an infinite loop during Unmarshal
+	type Alias KeepaliveConfig
+	aux := (*Alias)(k)
+
+	// 2. Decode the YAML into the struct
+	if err := value.Decode(aux); err != nil {
 		return err
 	}
-	// Apply defaults: if Enabled is true and Interval is zero, set to 30s
-	if c.Enabled && c.Interval == 0 {
-		c.Interval = 30 * time.Second
+
+	// 3. Apply your logic: if enabled but interval is missing/zero
+	if k.Enabled && k.Interval == 0 {
+		k.Interval = 30 * time.Second
 	}
+
 	return nil
 }
 
 // UnmarshalJSON implements JSON unmarshaling for KeepaliveConfig with defaults.
-func (c *KeepaliveConfig) UnmarshalJSON(data []byte) error {
-	// Define a temporary alias to avoid infinite recursion
-	type plain KeepaliveConfig
+func (k *KeepaliveConfig) UnmarshalJSON(data []byte) error {
+	// Define a alias and auxiliary struct to handle the duration
+	type Alias KeepaliveConfig
 	aux := &struct {
-		*plain
+		Interval string `json:"interval"` // Capture interval as a string
+		*Alias
 	}{
-		plain: (*plain)(c),
+		Alias: (*Alias)(k),
 	}
-	if err := json.Unmarshal(data, aux); err != nil {
+
+	// Unmarshal the raw JSON into auxiliary struct
+	if err := json.Unmarshal(data, &aux); err != nil {
 		return err
 	}
+
+	// Maniually parse the duration string if it exists
+	if aux.Interval != "" {
+		d, err := time.ParseDuration(aux.Interval)
+		if err != nil {
+			return fmt.Errorf("invalid json duration: %v", err)
+		}
+		k.Interval = d
+	}
+
 	// Apply defaults: if Enabled is true and Interval is zero, set to 30s
-	if c.Enabled && c.Interval == 0 {
-		c.Interval = 30 * time.Second
+	if k.Enabled && k.Interval == 0 {
+		k.Interval = 30 * time.Second
 	}
 	return nil
 }

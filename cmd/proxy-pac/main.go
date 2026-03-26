@@ -67,6 +67,11 @@ func loadConfig(path string) (*Config, error) {
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		return nil, err
 	}
+
+	// Print the config
+	// yaml_data, cfg_err := yaml.Marshal(&cfg)
+	// log.Printf("Current config: %+s, --error:%v", yaml_data, cfg_err)
+
 	// Reject TUN device configuration (removed feature)
 	if cfg.Proxy.TUNDevice != "" {
 		return nil, fmt.Errorf("TUN device support has been removed. Remove 'tun_device' from proxy configuration")
