@@ -25,9 +25,6 @@ type ServerStatus struct {
 	SOCKS5Listen string                     `json:"socks5Listen"`
 	AdminListen  string                     `json:"adminListen"`
 	HTTPSListen  string                     `json:"httpsListen,omitempty"`
-	TUNDevice    string                     `json:"tunDevice"`
-	TUNIP        string                     `json:"tunIP,omitempty"`
-	TUNUp        bool                       `json:"tunUp"`
 	ActiveConns  int                        `json:"activeConns"`
 	TotalConns   int64                      `json:"totalConns"`
 	SSHTunnels   map[string]SSHTunnelStatus `json:"sshTunnels,omitempty"`

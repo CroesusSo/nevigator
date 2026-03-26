@@ -15,7 +15,7 @@ func TestEvaluatorCacheBasic(t *testing.T) {
 	c := newEvaluatorCache(cfg)
 	defer c.Close()
 
-	route1 := Route{Strategy: "TUN"}
+	route1 := Route{Strategy: "SOCKS5", Address: "127.0.0.1:1080"}
 
 	// Set and get
 	c.Set("example.com", route1)
@@ -66,7 +66,7 @@ func TestEvaluatorCacheTTL(t *testing.T) {
 	c := newEvaluatorCache(cfg)
 	defer c.Close()
 
-	route := Route{Strategy: "TUN"}
+	route := Route{Strategy: "SOCKS5", Address: "127.0.0.1:1080"}
 	c.Set("test.com", route)
 
 	// Immediate hit
@@ -94,10 +94,10 @@ func TestEvaluatorCacheLRUEviction(t *testing.T) {
 	defer c.Close()
 
 	// Insert 4 entries, should evict the first one
-	c.Set("a", Route{Strategy: "TUN"})
-	c.Set("b", Route{Strategy: "TUN"})
-	c.Set("c", Route{Strategy: "TUN"})
-	c.Set("d", Route{Strategy: "TUN"}) // evicts 'a'
+	c.Set("a", Route{Strategy: "SOCKS5", Address: "127.0.0.1:1080"})
+	c.Set("b", Route{Strategy: "SOCKS5", Address: "127.0.0.1:1080"})
+	c.Set("c", Route{Strategy: "SOCKS5", Address: "127.0.0.1:1080"})
+	c.Set("d", Route{Strategy: "SOCKS5", Address: "127.0.0.1:1080"}) // evicts 'a'
 
 	_, ok := c.Get("a")
 	if ok {
@@ -126,7 +126,7 @@ func TestEvaluatorCacheInvalidateAll(t *testing.T) {
 	c := newEvaluatorCache(cfg)
 	defer c.Close()
 
-	c.Set("a", Route{Strategy: "TUN"})
+	c.Set("a", Route{Strategy: "SOCKS5", Address: "127.0.0.1:1080"})
 	c.Set("b", Route{Strategy: "SOCKS5", Address: "127.0.0.1:1080"})
 
 	c.InvalidateAll()
@@ -177,7 +177,7 @@ func TestEvaluatorCacheConcurrent(t *testing.T) {
 			defer wg.Done()
 			for j := 0; j < operationsPerGoroutine; j++ {
 				host := string(rune('a')+rune((idx*j)%26)) + ".com"
-				route := Route{Strategy: "TUN"}
+				route := Route{Strategy: "SOCKS5", Address: "127.0.0.1:1080"}
 				c.Set(host, route)
 				c.Get(host)
 			}

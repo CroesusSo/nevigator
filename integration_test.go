@@ -1,7 +1,6 @@
 package main
 
 import (
-	"net"
 	"os"
 	"path/filepath"
 	"testing"
@@ -18,10 +17,10 @@ func TestEvaluatorIntegration(t *testing.T) {
 	pacPath := filepath.Join(tmpDir, "test.pac")
 	// Create PAC with rules:
 	// - host glob *.direct -> DIRECT
-	// - domain suffix .tun.example -> TUN
+	// - domain suffix .proxy.example -> SOCKS5 proxy
 	userRules := []gfw.Rule{
 		{ID: "r1", Source: "test", Enabled: true, Match: gfw.MatchHostGlob, Value: "*.direct", Route: "DIRECT"},
-		{ID: "r2", Source: "test", Enabled: true, Match: gfw.MatchDomainSuffix, Value: ".tun.example", Route: "TUN"},
+		{ID: "r2", Source: "test", Enabled: true, Match: gfw.MatchDomainSuffix, Value: ".proxy.example", Route: "SOCKS5 1.2.3.4:1080"},
 	}
 	pacContent := gfw.GeneratePAC(userRules, nil, gfw.FWMeta{})
 	if err := os.WriteFile(pacPath, []byte(pacContent), 0644); err != nil {
@@ -34,7 +33,7 @@ func TestEvaluatorIntegration(t *testing.T) {
 		DNSTimeout:     100 * time.Millisecond,
 		EvalTimeout:    100 * time.Millisecond,
 		EnableDNSCache: false,
-		FallbackRoute:  pac.Route{Strategy: "SOCKS5", Address: "1.2.3.4:1080"},
+		FallbackRoute:  pac.Route{Strategy: "DIRECT"},
 	}
 	ev, err := pac.NewEvaluator(cfg)
 	if err != nil {
@@ -47,8 +46,8 @@ func TestEvaluatorIntegration(t *testing.T) {
 		want string
 	}{
 		{"foo.direct", "DIRECT"},
-		{"bar.tun.example", "TUN"},
-		{"other.com", "SOCKS5"},
+		{"bar.proxy.example", "SOCKS5"},
+		{"other.com", "DIRECT"}, // fallback
 	}
 	for _, tt := range tests {
 		route := ev.Evaluate(tt.host)
@@ -131,11 +130,9 @@ func TestDefaultProxyParsing(t *testing.T) {
 	}
 }
 
-// TestRouterFallback tests that failed TUN route falls back to DIRECT.
+// TestRouterFallback tests that failed SOCKS5 route falls back to DIRECT.
 func TestRouterFallback(t *testing.T) {
-	tunIP := net.ParseIP("127.0.0.1")
 	routerCfg := pac.RouterConfig{
-		TUNIP:       tunIP,
 		DialTimeout: 50 * time.Millisecond,
 	}
 	r, err := router.NewRouter(routerCfg)
@@ -143,13 +140,15 @@ func TestRouterFallback(t *testing.T) {
 		t.Fatalf("NewRouter: %v", err)
 	}
 	dest := "8.8.8.8:53"
-	route := pac.Route{Strategy: "TUN"}
+	// Use invalid SOCKS5 address to force failure, then verify fallback to DIRECT works
+	route := pac.Route{Strategy: "SOCKS5", Address: "192.0.2.1:1080"}
 	conn, err := r.Route(dest, route)
 	if err != nil {
 		t.Logf("Router fallback resulted in error (no network?): %v", err)
 		return
 	}
 	conn.Close()
+	// If we got here, fallback to DIRECT succeeded
 }
 
 // TestHotReload tests PAC file hot reload.
@@ -176,14 +175,14 @@ func TestHotReload(t *testing.T) {
 	if ev.Evaluate("test").Strategy != "DIRECT" {
 		t.Error("initial route not DIRECT")
 	}
-	// modified: rule that matches everything -> TUN
+	// modified: rule that matches everything -> SOCKS5
 	rule := gfw.Rule{
 		ID:      "all",
 		Source:  "user",
 		Enabled: true,
 		Match:   gfw.MatchHostGlob,
 		Value:   "*",
-		Route:   "TUN",
+		Route:   "SOCKS5 127.0.0.1:1080",
 	}
 	modified := gfw.GeneratePAC([]gfw.Rule{rule}, nil, gfw.FWMeta{})
 	time.Sleep(10 * time.Millisecond)
@@ -192,8 +191,8 @@ func TestHotReload(t *testing.T) {
 	}
 	ev.Reload()
 	time.Sleep(100 * time.Millisecond)
-	if ev.Evaluate("test").Strategy != "TUN" {
-		t.Error("after reload, route not TUN")
+	if ev.Evaluate("test").Strategy != "SOCKS5" {
+		t.Error("after reload, route not SOCKS5")
 	}
 }
 
@@ -273,7 +272,7 @@ func TestRuleEditorPACRegeneration(t *testing.T) {
 	userPath := filepath.Join(tmpDir, "user-rules.json")
 	gfwPath := filepath.Join(tmpDir, "gfw-rules.json")
 	userRules := []gfw.Rule{
-		{ID: "usr-1", Source: "user", Enabled: true, Match: gfw.MatchDomainSuffix, Value: ".test.com", Route: "TUN"},
+		{ID: "usr-1", Source: "user", Enabled: true, Match: gfw.MatchDomainSuffix, Value: ".test.com", Route: "SOCKS5 old:1080"},
 	}
 	gfw.SaveRules(userPath, userRules)
 	gfw.SaveRules(gfwPath, []gfw.Rule{})
@@ -294,8 +293,8 @@ func TestRuleEditorPACRegeneration(t *testing.T) {
 	}
 	defer ev.Close()
 	route := ev.Evaluate("sub.test.com")
-	if route.Strategy != "TUN" {
-		t.Errorf("initial: expected TUN, got %s", route.Strategy)
+	if route.Strategy != "SOCKS5" {
+		t.Errorf("initial: expected SOCKS5, got %s", route.Strategy)
 	}
 	newUserRules := []gfw.Rule{
 		{ID: "usr-1", Source: "user", Enabled: true, Match: gfw.MatchDomainSuffix, Value: ".test.com", Route: "SOCKS5 new:1080"},

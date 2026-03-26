@@ -204,7 +204,6 @@ func TestHandlePutConfig_PreservesOtherFields(t *testing.T) {
   admin_listen: "127.0.0.1:9090"
   https_listen: ":8443"
   pac_path: "/old/pac.pac"
-  tun_device: "tun0"
   default_external_proxy: ""
   external_proxies: []
   tls:
@@ -349,51 +348,5 @@ func TestHandlePutConfig_InvalidJSON(t *testing.T) {
 
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("status code = %d, want %d", w.Code, http.StatusBadRequest)
-	}
-}
-
-func TestHandlePutConfig_RestartRequiredOnlyForListenersAndTLS(t *testing.T) {
-	initial := `proxy:
-  http_listen: ":8080"
-  https_listen: ":8443"
-  tls:
-    certificate_file: "/cert.pem"
-    key_file: "/key.pem"
-    ca_file: ""
-    client_auth: ""
-`
-	cfgPath := writeTempConfig(t, initial)
-	h := &Handler{configPath: cfgPath}
-
-	// Update only tun_device (non-restart-field)
-	payload := map[string]interface{}{
-		"tun_device": "tun1",
-	}
-	body, _ := json.Marshal(payload)
-	req := httptest.NewRequest(http.MethodPut, "/api/config", strings.NewReader(string(body)))
-	req.Header.Set("Content-Type", "application/json")
-	w := httptest.NewRecorder()
-	h.handleConfig(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Fatalf("status code = %d, want %d", w.Code, http.StatusOK)
-	}
-
-	var resp map[string]interface{}
-	json.NewDecoder(w.Body).Decode(&resp)
-	if restart, _ := resp["restart_required"].(bool); restart {
-		t.Error("restart_required should be false for tun_device change")
-	}
-
-	// Verify tun_device updated
-	data, _ := os.ReadFile(cfgPath)
-	var cfg FullConfig
-	yaml.Unmarshal(data, &cfg)
-	if cfg.Proxy.TUNDevice != "tun1" {
-		t.Errorf("TUNDevice not updated: %q", cfg.Proxy.TUNDevice)
-	}
-	// Ensure https_listen unchanged
-	if cfg.Proxy.HTTPSListen != ":8443" {
-		t.Errorf("HTTPSListen changed: %q", cfg.Proxy.HTTPSListen)
 	}
 }

@@ -9,19 +9,18 @@ let gfwRules = [];
  let gfwVisibleEnd = 0;
  let gfwLoaded = false;
 
- const tooltips = {
-   match: {
-     domain_suffix: "Matches domain suffixes (e.g., .example.com)",
-     host_glob: "Matches hostnames using * and ? wildcards",
-     url_glob: "Matches full URLs using * and ? wildcards",
-     exact: "Exact match"
-   },
-   route: {
-     TUN: "Route through TUN device (VPN)",
-     DIRECT: "Direct connection (no proxy)",
-     SOCKS5: "Route through SOCKS5 upstream proxy"
-   }
-  };
+  const tooltips = {
+    match: {
+      domain_suffix: "Matches domain suffixes (e.g., .example.com)",
+      host_glob: "Matches hostnames using * and ? wildcards",
+      url_glob: "Matches full URLs using * and ? wildcards",
+      exact: "Exact match"
+    },
+    route: {
+      DIRECT: "Direct connection (no proxy)",
+      SOCKS5: "Route through SOCKS5 upstream proxy"
+    }
+   };
 
   // formatDuration converts time.Duration string (from API) to a user-friendly format
   function formatDuration(d) {
@@ -86,19 +85,10 @@ let gfwRules = [];
  async function loadStatus() {
    const res = await fetch('/api/status');
    const d = await res.json();
-   document.getElementById('s-http').textContent = d.httpListen || '-';
-   document.getElementById('s-socks5').textContent = d.socks5Listen || '-';
-   document.getElementById('s-admin').textContent = d.adminListen || '-';
-   var tunHtml = '';
-   if (d.tunDevice) {
-     tunHtml = d.tunDevice;
-     if (d.tunIP) tunHtml += ' → ' + d.tunIP;
-     tunHtml += ' <span class="status-dot ' + (d.tunUp ? 'up' : 'down') + '"></span>' + (d.tunUp ? 'up' : 'down');
-   } else {
-     tunHtml = '<span style="color:#999">not configured</span>';
-   }
-   document.getElementById('s-tun').innerHTML = tunHtml;
-   document.getElementById('s-active').textContent = d.activeConns != null ? d.activeConns : '-';
+    document.getElementById('s-http').textContent = d.httpListen || '-';
+    document.getElementById('s-socks5').textContent = d.socks5Listen || '-';
+    document.getElementById('s-admin').textContent = d.adminListen || '-';
+    document.getElementById('s-active').textContent = d.activeConns != null ? d.activeConns : '-';
    document.getElementById('s-total').textContent = d.totalConns != null ? d.totalConns : '-';
  }
 
@@ -121,7 +111,7 @@ let gfwRules = [];
      var tr = document.createElement('tr');
      var started = new Date(c.startedAt).getTime();
      var dur = fmtDuration(now - started);
-     var routeCls = c.route === 'TUN' ? 'tun' : c.route === 'SOCKS5' ? 'socks5' : c.route === 'DIRECT' ? 'direct' : 'http';
+      var routeCls = c.route === 'SOCKS5' ? 'socks5' : c.route === 'DIRECT' ? 'direct' : 'http';
      tr.innerHTML =
        '<td><code>' + escHtml(c.id) + '</code></td>' +
        '<td>' + escHtml(c.clientAddr) + '</td>' +
@@ -195,7 +185,7 @@ let gfwRules = [];
           ['domain_suffix','host_glob','url_glob','exact'].map(m => 
             '<option value="' + m + '"' + (m === r.match ? ' selected' : '') + '>' + m + '</option>'
           ).join('') + '</select>';
-        let routeOptions = ['DIRECT','TUN','DEFAULT','SOCKS5 127.0.0.1:1080'];
+        let routeOptions = ['DIRECT','DEFAULT','SOCKS5 127.0.0.1:1080'];
         allProxies.forEach(p => routeOptions.push('EXTERNAL ' + p.id));
         const routeSelect = '<select id="edit-route-' + r.id + '">' +
           routeOptions.map(rt => 
@@ -826,7 +816,6 @@ let gfwRules = [];
         if (document.getElementById('admin-listen')) document.getElementById('admin-listen').value = cfg.admin_listen || '';
         if (document.getElementById('https-listen')) document.getElementById('https-listen').value = cfg.https_listen || '';
         if (document.getElementById('pac-path')) document.getElementById('pac-path').value = cfg.pac_path || '';
-        if (document.getElementById('tun-device')) document.getElementById('tun-device').value = cfg.tun_device || '';
         // TLS fields
         if (document.getElementById('tls-certificate')) document.getElementById('tls-certificate').value = cfg.tls?.certificate_file || '';
         if (document.getElementById('tls-key')) document.getElementById('tls-key').value = cfg.tls?.key_file || '';
@@ -882,7 +871,6 @@ let gfwRules = [];
         admin_listen: document.getElementById('admin-listen').value,
         https_listen: document.getElementById('https-listen').value,
         pac_path: document.getElementById('pac-path').value,
-        tun_device: document.getElementById('tun-device').value,
         tls: {
           certificate_file: document.getElementById('tls-certificate').value,
           key_file: document.getElementById('tls-key').value,
@@ -915,8 +903,8 @@ let gfwRules = [];
     }
    
    function updateRouteOptions() {
-    const base = ['DIRECT','TUN','DEFAULT','SOCKS5 127.0.0.1:1080'];
-    allProxies.forEach(p => base.push('EXTERNAL ' + p.id));
+     const base = ['DIRECT','DEFAULT','SOCKS5 127.0.0.1:1080'];
+     allProxies.forEach(p => base.push('EXTERNAL ' + p.id));
     const addSelect = document.getElementById('new-route');
     if (addSelect) {
       addSelect.innerHTML = base.map(rt => '<option value="' + rt + '">' + rt + '</option>').join('');

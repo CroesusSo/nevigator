@@ -51,7 +51,6 @@ type Config struct {
 		SourceURL        string        `yaml:"source_url"`
 		LocalRulesPath   string        `yaml:"local_rules_path"`
 		UserRulesPath    string        `yaml:"user_rules_path"`
-		UseTUN           bool          `yaml:"use_tun"`
 		UpdateInterval   time.Duration `yaml:"update_interval"`
 		FetchOnStartup   bool          `yaml:"fetch_on_startup"`
 		HTTPTimeout      time.Duration `yaml:"http_timeout"`
@@ -67,6 +66,10 @@ func loadConfig(path string) (*Config, error) {
 	var cfg Config
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		return nil, err
+	}
+	// Reject TUN device configuration (removed feature)
+	if cfg.Proxy.TUNDevice != "" {
+		return nil, fmt.Errorf("TUN device support has been removed. Remove 'tun_device' from proxy configuration")
 	}
 	// Set defaults
 	if cfg.Proxy.HTTPListen == "" {
@@ -91,23 +94,6 @@ func loadConfig(path string) (*Config, error) {
 	return &cfg, nil
 }
 
-func discoverTUNIP(deviceName string) (net.IP, error) {
-	iface, err := net.InterfaceByName(deviceName)
-	if err != nil {
-		return nil, err
-	}
-	addrs, err := iface.Addrs()
-	if err != nil {
-		return nil, err
-	}
-	for _, addr := range addrs {
-		if ipnet, ok := addr.(*net.IPNet); ok && ipnet.IP.To4() != nil {
-			return ipnet.IP, nil
-		}
-	}
-	return nil, nil // no IPv4 found, not an error
-}
-
 // defaultConfigYAML returns the default config YAML with PAC path resolved.
 func defaultConfigYAML(pacPath string) string {
 	home, _ := os.UserHomeDir()
@@ -118,7 +104,7 @@ func defaultConfigYAML(pacPath string) string {
   admin_listen: "127.0.0.1:9090"
   https_listen: ":8443"
   pac_path: "%s"
-  tun_device: "tun0"
+  # tun_device removed - TUN routing no longer supported
   default_external_proxy: ""
   external_proxies: []
   tls:
@@ -152,7 +138,7 @@ gfw:
   source_url: "https://raw.githubusercontent.com/gfwlist/gfwlist/master/gfwlist.txt"
   local_rules_path: "%s"
   user_rules_path: "%s"
-  use_tun: true
+  # use_tun: removed - no longer supported
   update_interval: 24h
   fetch_on_startup: true
   http_timeout: 60s
@@ -199,7 +185,6 @@ func defaultConfig() *Config {
 	cfg.Proxy.SOCKS5Listen = ":11080"
 	cfg.Proxy.AdminListen = "127.0.0.1:9090"
 	cfg.Proxy.HTTPSListen = ":8443"
-	cfg.Proxy.TUNDevice = "tun0"
 	cfg.PAC.DNSTimeout = 500 * time.Millisecond
 	cfg.PAC.EvalTimeout = 200 * time.Millisecond
 	return cfg
@@ -252,18 +237,8 @@ func main() {
 		cfg.GFW.SourceURL = "https://raw.githubusercontent.com/gfwlist/gfwlist/master/gfwlist.txt"
 	}
 
-	// Discover TUN IP
-	tunIP, err := discoverTUNIP(cfg.Proxy.TUNDevice)
-	if err != nil {
-		log.Printf("Warning: could not discover TUN IP for %s: %v", cfg.Proxy.TUNDevice, err)
-	}
-	log.Printf("TUN device %s IP: %v", cfg.Proxy.TUNDevice, tunIP)
-
-	// If LocalIP not set, use discovered TUN IP
+	// Determine local IP for myIpAddress() builtin (use configured value or leave empty)
 	localIP := cfg.PAC.LocalIP
-	if localIP == "" && tunIP != nil {
-		localIP = tunIP.String()
-	}
 
 	// Create PAC evaluator
 	evalCfg := pac.EvaluatorConfig{
@@ -285,8 +260,6 @@ func main() {
 
 	// Create router
 	routerCfg := pac.RouterConfig{
-		TUNDevice:   cfg.Proxy.TUNDevice,
-		TUNIP:       tunIP,
 		DialTimeout: 30 * time.Second,
 	}
 	router, err := router.NewRouter(routerCfg)
@@ -317,11 +290,9 @@ func main() {
 		AdminListen:  cfg.Proxy.AdminListen,
 		HTTPSListen:  cfg.Proxy.HTTPSListen,
 		PACPath:      cfg.Proxy.PACPath,
-		TUNDevice:    cfg.Proxy.TUNDevice,
 		TLSConfig:    cfg.Proxy.TLS,
 	}
 	proxySrv := proxy.NewServer(proxyCfg, evaluator, router)
-	proxySrv.SetTUNIP(tunIP)
 
 	// Set external proxy registry and default
 	if len(cfg.Proxy.ExternalProxies) > 0 {
@@ -350,15 +321,6 @@ func main() {
 
 		gfwFetcher = gfw.NewFetcher(cfg.GFW.SourceURL, gfwPath, httpTimeout)
 		gfwFetcher.SetDisabled(cfg.GFW.Disabled)
-
-		// IMPORTANT: Do NOT bind GFW fetcher to TUN interface to avoid DNS resolution issues
-		// The GFW list must be fetched using the system's default network interface
-		// to ensure proper DNS resolution of raw.githubusercontent.com
-		if cfg.GFW.UseTUN && tunIP != nil {
-			log.Printf("[GFW] TUN interface %s is configured for routing, but GFW fetcher uses system default for DNS resolution", tunIP)
-			// Note: We intentionally do NOT bind the HTTP client to the TUN interface
-			// to avoid DNS hijacking/resolution issues when fetching the GFW list
-		}
 
 		// Custom DNS: if configured, override HTTP client with custom resolver
 		if len(cfg.GFW.CustomDNSServers) > 0 {

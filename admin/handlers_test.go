@@ -110,9 +110,6 @@ func TestHandleStatusAPI(t *testing.T) {
 			HTTPListen:   ":8080",
 			SOCKS5Listen: ":1080",
 			AdminListen:  "127.0.0.1:9090",
-			TUNDevice:    "tun0",
-			TUNIP:        "10.0.0.2",
-			TUNUp:        true,
 			ActiveConns:  3,
 			TotalConns:   42,
 		},
@@ -133,12 +130,6 @@ func TestHandleStatusAPI(t *testing.T) {
 	}
 	if got.HTTPListen != ":8080" {
 		t.Errorf("HTTPListen = %q, want %q", got.HTTPListen, ":8080")
-	}
-	if got.TUNDevice != "tun0" {
-		t.Errorf("TUNDevice = %q, want %q", got.TUNDevice, "tun0")
-	}
-	if !got.TUNUp {
-		t.Error("TUNUp = false, want true")
 	}
 	if got.ActiveConns != 3 {
 		t.Errorf("ActiveConns = %d, want 3", got.ActiveConns)
@@ -162,7 +153,7 @@ func TestHandleConnections(t *testing.T) {
 	now := time.Now()
 	mp := &mockStatusProvider{
 		conns: []status.Connection{
-			{ID: "conn-1", ClientAddr: "10.0.0.1:5000", DestAddr: "example.com:443", Route: "TUN", Protocol: "http", StartedAt: now},
+			{ID: "conn-1", ClientAddr: "10.0.0.1:5000", DestAddr: "example.com:443", Route: "SOCKS5", Protocol: "http", StartedAt: now},
 			{ID: "conn-2", ClientAddr: "10.0.0.1:5001", DestAddr: "local.dev:80", Route: "DIRECT", Protocol: "socks5", StartedAt: now},
 		},
 	}

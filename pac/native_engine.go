@@ -263,8 +263,6 @@ func routeFromString(s string) Route {
 		return Route{Strategy: "DIRECT"}
 	}
 	switch strings.ToUpper(tokens[0]) {
-	case "TUN":
-		return Route{Strategy: "TUN"}
 	case "SOCKS5":
 		if len(tokens) >= 2 {
 			return Route{Strategy: "SOCKS5", Address: tokens[1]}
@@ -309,6 +307,10 @@ func NewNativeRuleEngine(pacContent string, fallback Route, enableDeepest bool) 
 	for i, r := range rules {
 		if !r.Enabled {
 			continue
+		}
+		// Reject TUN routes (removed feature)
+		if strings.ToUpper(strings.TrimSpace(r.Route)) == "TUN" {
+			return nil, fmt.Errorf("PAC contains unsupported TUN route at rule ID %s. TUN routing has been removed; use SOCKS5 or EXTERNAL proxy instead.", r.ID)
 		}
 		meta := ruleMeta{index: i, route: routeFromString(r.Route)}
 		switch r.Match {

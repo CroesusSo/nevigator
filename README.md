@@ -1,12 +1,12 @@
-# PAC-Enabled Proxy with TUN Support
+# PAC-Enabled Proxy
 
-A high-performance proxy server that uses PAC (Proxy Auto-Config) scripts to route traffic through TUN devices (VPN) or SOCKS5 upstreams, with automatic fallback to system default route.
+A high-performance proxy server that uses PAC (Proxy Auto-Config) scripts to route traffic via SOCKS5 upstream proxies or DIRECT (system default), with automatic fallback.
 
 ## Features
 
 - HTTP CONNECT and SOCKS5 proxy support
 - Native PAC rule engine (no JavaScript) for high-performance evaluation
-- Route strategies: TUN (bind to TUN interface IP), SOCKS5 upstream, DIRECT (system default)
+- Route strategies: SOCKS5 upstream, DIRECT, EXTERNAL proxy, DEFAULT
 - Automatic fallback to DIRECT if chosen route fails
 - Hot-reload PAC file via file watcher or admin API
 - Web admin UI for editing, testing, and reloading PAC
@@ -30,10 +30,10 @@ proxy:
   socks5_listen: 0.0.0.0:1080
   admin_listen: 127.0.0.1:9090
   pac_path: /etc/proxy.pac
-  tun_device: tun0
+  # tun_device removed - TUN routing no longer supported
 
 pac:
-  local_ip: ""            # auto from tun0
+  local_ip: ""            # optional, for myIpAddress() builtin
   enable_url_glob: false   # set to true to preserve URL-glob rules (not recommended; native engine does not support URL-glob)
   dns_timeout: 500ms
   eval_timeout: 200ms
@@ -103,12 +103,12 @@ With rules:
 
 | Index | Pattern          | Route   |
 |-------|------------------|---------|
-| 0     | `.com`           | SOCKS5  |
-| 1     | `.google.com`    | TUN     |
+| 0     | `.com`           | DIRECT  |
+| 1     | `.google.com`    | SOCKS5  |
 
 For `mail.google.com`:
-- `deepest_match: false` → rule 0 wins (lower index) → SOCKS5
-- `deepest_match: true`  → rule 1 wins (longer suffix) → TUN
+- `deepest_match: false` → rule 0 wins (lower index) → DIRECT
+- `deepest_match: true`  → rule 1 wins (longer suffix) → SOCKS5
 
 ## Admin UI
 
@@ -118,7 +118,7 @@ Open `http://localhost:9090` in browser to:
 - Test a URL to see which route is chosen
 - View status
 - **Proxies tab**: manage external SOCKS5 proxies, set default, test connectivity
-- **Settings tab**: view and edit listening addresses, PAC path, and TUN device
+- **Settings tab**: view and edit listening addresses, PAC path, TLS settings, and PAC performance options
 
 ## GFW List Integration
 
@@ -217,18 +217,17 @@ Each rule in `__PAC_RULES__` has:
 - `id` – unique identifier
 - `match` – match type: `exact`, `domain_suffix`, `host_glob` (URL-glob not supported)
 - `value` – pattern to match (e.g., `"example.com"`, `".google.com"`, `"*.onion"`)
-- `route` – one of: `"TUN"`, `"SOCKS5 host:port"`, `"EXTERNAL <id>"`, `"DEFAULT"`, `"DIRECT"`
+- `route` – one of: `"SOCKS5 host:port"`, `"EXTERNAL <id>"`, `"DEFAULT"`, `"DIRECT"`
 - `enabled` – boolean
 
 ### Example PAC File
 
 ```javascript
 var __PAC_RULES__ = {"version":1,"rules":[
-  {"id":"1","match":"exact","value":"example.com","route":"TUN"},
-  {"id":"2","match":"domain_suffix","value":".google.com","route":"SOCKS5 127.0.0.1:9050"},
+  {"id":"1","match":"exact","value":"example.com","route":"SOCKS5 127.0.0.1:9050"},
+  {"id":"2","match":"domain_suffix","value":".google.com","route":"DIRECT"},
   {"id":"3","match":"host_glob","value":"*.onion","route":"DIRECT"}
 ]};
-function FindProxyForURL(url, host) { return 'DIRECT'; }
 ```
 
 **External Proxies** are defined in `config.yaml` under `proxy.external_proxies`. Each has an `id`, `address`, and optional `username`/`password`. Use `"EXTERNAL <id>"` to route through them.
@@ -252,9 +251,10 @@ For full details, see the [Native Rule Engine](#native-rule-engine) section.
 1. Client connects via HTTP CONNECT or SOCKS5
 2. Proxy asks PAC evaluator for route based on destination host
 3. Router establishes outbound connection according to route:
-   - TUN: binds socket to TUN interface IP
    - SOCKS5: connects to upstream and performs SOCKS5 handshake
    - DIRECT: normal net.Dial (uses OS routing)
+   - EXTERNAL: uses external proxy from registry
+   - DEFAULT: uses default external proxy
 4. If route fails (except DIRECT), automatically retries with DIRECT
 5. Data is relayed between client and outbound
 
@@ -266,7 +266,7 @@ See `contrib/proxy-pac.service`.
 
 ### Docker
 
-The container needs access to the host's TUN device if you want to use TUN routes. The proxy only needs to read the interface IP; it does not manipulate the TUN directly. Mount the config and PAC files as volumes.
+Mount the config and PAC files as volumes.
 
 ## Testing
 

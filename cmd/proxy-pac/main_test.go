@@ -93,9 +93,6 @@ func TestGenerateDefaultConfig(t *testing.T) {
 	if cfg.Proxy.AdminListen != "127.0.0.1:9090" {
 		t.Errorf("expected AdminListen 127.0.0.1:9090, got %s", cfg.Proxy.AdminListen)
 	}
-	if cfg.Proxy.TUNDevice != "tun0" {
-		t.Errorf("expected TUNDevice tun0, got %s", cfg.Proxy.TUNDevice)
-	}
 	// PACPath is resolved to be alongside the config file
 	expectedPAC := filepath.Join(filepath.Dir(configPath), "proxy.pac")
 	if cfg.Proxy.PACPath != expectedPAC {
@@ -139,9 +136,7 @@ func TestDefaultConfig(t *testing.T) {
 	if cfg.Proxy.PACPath != "" {
 		t.Errorf("expected empty PACPath, got %s", cfg.Proxy.PACPath)
 	}
-	if cfg.Proxy.TUNDevice != "tun0" {
-		t.Errorf("expected tun0, got %s", cfg.Proxy.TUNDevice)
-	}
+	// TUNDevice field removed
 }
 
 func TestLoadConfig_EmptyTUNDevicePreserved(t *testing.T) {

@@ -22,7 +22,6 @@ type TunnelManager interface {
 }
 
 var (
-	ErrTUNNotConfigured              = errors.New("TUN not configured")
 	ErrInvalidSOCKS5Address          = errors.New("SOCKS5 address required")
 	ErrUnknownStrategy               = errors.New("unknown route strategy")
 	ErrSOCKS5AuthFailed              = errors.New("SOCKS5 authentication failed")
@@ -51,7 +50,6 @@ var socks5Errors = map[byte]error{
 // Router implements the routing logic.
 type Router struct {
 	cfg            pac.RouterConfig
-	tunIP          net.IP // resolved TUN IP
 	dialTimeout    time.Duration
 	proxyMu        sync.RWMutex
 	proxyRegistry  map[string]pac.ExternalProxy // ID → proxy
@@ -60,7 +58,6 @@ type Router struct {
 }
 
 // NewRouter creates a Router with the given config.
-// It also discovers the TUN IP if device is configured.
 func NewRouter(cfg pac.RouterConfig) (*Router, error) {
 	r := &Router{
 		cfg:         cfg,
@@ -69,7 +66,6 @@ func NewRouter(cfg pac.RouterConfig) (*Router, error) {
 	if cfg.DialTimeout == 0 {
 		r.dialTimeout = 30 * time.Second
 	}
-	r.tunIP = cfg.TUNIP
 	return r, nil
 }
 
@@ -123,15 +119,6 @@ func (r *Router) dialWithRoute(dest string, route pac.Route) (net.Conn, error) {
 	}
 
 	switch route.Strategy {
-	case "TUN":
-		if r.tunIP == nil {
-			return nil, ErrTUNNotConfigured
-		}
-		dialer.LocalAddr = &net.TCPAddr{
-			IP:   r.tunIP,
-			Port: 0,
-		}
-		return dialer.Dial("tcp", dest)
 	case "SOCKS5":
 		if route.Address == "" {
 			return nil, ErrInvalidSOCKS5Address

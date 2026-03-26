@@ -2,7 +2,6 @@ package pac
 
 import (
 	"encoding/json"
-	"net"
 	"time"
 )
 
@@ -107,7 +106,7 @@ type ExternalProxy struct {
 
 // Route represents a routing decision from PAC evaluation.
 type Route struct {
-	Strategy   string // "TUN", "SOCKS5", "DIRECT", "EXTERNAL", "DEFAULT"
+	Strategy   string // "SOCKS5", "DIRECT", "EXTERNAL", "DEFAULT"
 	Address    string // required for SOCKS5, ignored otherwise
 	ExternalID string // used when Strategy == "EXTERNAL"
 }
@@ -134,8 +133,6 @@ type EvaluatorConfig struct {
 
 // RouterConfig holds configuration for the Router.
 type RouterConfig struct {
-	TUNDevice       string
-	TUNIP           net.IP          // If nil, will be discovered from TUNDevice
 	DialTimeout     time.Duration   // Timeout for establishing outbound connections
 	ExternalProxies []ExternalProxy // Registry of upstream SOCKS5 proxies (injected, not from YAML directly)
 }
@@ -147,8 +144,6 @@ type ProxyConfig struct {
 	AdminListen  string
 	HTTPSListen  string // Optional TLS-wrapped HTTP proxy
 	PACPath      string
-	TUNDevice    string
-	TUNIP        net.IP // auto-discovered if empty
 
 	// TLS configuration for HTTPS proxy support
 	TLSConfig TLSConfig `yaml:"tls"`

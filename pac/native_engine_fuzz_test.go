@@ -18,7 +18,7 @@ func FuzzDomainSuffixTrie(f *testing.F) {
 			return
 		}
 		trie := newDomainSuffixTrie()
-		meta := ruleMeta{index: index, route: Route{Strategy: "TUN"}}
+		meta := ruleMeta{index: index, route: Route{Strategy: "SOCKS5", Address: "127.0.0.1:1080"}}
 		segments := splitDomainPattern(pattern)
 		if len(segments) == 0 {
 			return

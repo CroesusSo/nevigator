@@ -12,15 +12,15 @@ func TestConnectionStruct(t *testing.T) {
 		ID:         "conn-1",
 		ClientAddr: "10.0.0.1:5234",
 		DestAddr:   "example.com:443",
-		Route:      "TUN",
+		Route:      "SOCKS5",
 		Protocol:   "http",
 		StartedAt:  now,
 	}
 	if c.ID != "conn-1" {
 		t.Errorf("ID = %q, want %q", c.ID, "conn-1")
 	}
-	if c.Route != "TUN" {
-		t.Errorf("Route = %q, want %q", c.Route, "TUN")
+	if c.Route != "SOCKS5" {
+		t.Errorf("Route = %q, want %q", c.Route, "SOCKS5")
 	}
 
 	data, err := json.Marshal(c)
@@ -41,9 +41,6 @@ func TestServerStatusStruct(t *testing.T) {
 		HTTPListen:   ":8080",
 		SOCKS5Listen: ":1080",
 		AdminListen:  "127.0.0.1:9090",
-		TUNDevice:    "tun0",
-		TUNIP:        "10.0.0.2",
-		TUNUp:        true,
 		ActiveConns:  5,
 		TotalConns:   100,
 	}
@@ -59,7 +56,7 @@ func TestServerStatusStruct(t *testing.T) {
 	if err := json.Unmarshal(data, &decoded); err != nil {
 		t.Fatalf("json.Unmarshal: %v", err)
 	}
-	if decoded.TUNDevice != "tun0" || !decoded.TUNUp {
+	if decoded.ActiveConns != 5 {
 		t.Errorf("round-trip mismatch: got %+v", decoded)
 	}
 }
@@ -67,19 +64,24 @@ func TestServerStatusStruct(t *testing.T) {
 func TestServerStatusOmitEmpty(t *testing.T) {
 	s := ServerStatus{
 		HTTPListen: ":8080",
-		TUNUp:      false,
 	}
 	data, err := json.Marshal(s)
 	if err != nil {
 		t.Fatalf("json.Marshal: %v", err)
 	}
-	// tunIP should be omitted when empty
+	// Ensure no TUN fields are present
 	var m map[string]interface{}
 	if err := json.Unmarshal(data, &m); err != nil {
 		t.Fatalf("json.Unmarshal: %v", err)
 	}
 	if _, ok := m["tunIP"]; ok {
-		t.Error("tunIP should be omitted when empty")
+		t.Error("tunIP should be omitted")
+	}
+	if _, ok := m["tunDevice"]; ok {
+		t.Error("tunDevice should be omitted")
+	}
+	if _, ok := m["tunUp"]; ok {
+		t.Error("tunUp should be omitted")
 	}
 }
 
@@ -97,7 +99,7 @@ func TestStatusProviderInterface(t *testing.T) {
 	mp := &mockProvider{
 		status: ServerStatus{HTTPListen: ":8080", ActiveConns: 3},
 		conns: []Connection{
-			{ID: "conn-1", Route: "TUN"},
+			{ID: "conn-1", Route: "SOCKS5"},
 			{ID: "conn-2", Route: "DIRECT"},
 		},
 	}

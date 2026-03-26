@@ -3,36 +3,57 @@ proxy:
   socks5_listen: 0.0.0.0:1080
   admin_listen: 127.0.0.1:9090
   pac_path: /etc/proxy.pac
-  tun_device: tun0
-   default_external_proxy: ""  # optional, ID from external_proxies
-   # Example external proxy configurations (uncomment and customize):
-   # external_proxies:
-   #   - id: "ssh-us"
-   #     kind: "ssh"
-   #     address: "user@ssh.example.com:22"
-   #     auth_method: "password"
-   #     password: "your_password"
-   #     keepalive:
-   #       enabled: true
-   #       interval: 30s
-   #   - id: "socks5-tw"
-   #     kind: "socks5"
-   #     address: "socks5.example.com:1080"
-   #     username: "user"
-   #     password: "pass"
-   external_proxies: []        # list of external SOCKS5/SSH proxies
+  # tun_device: removed - TUN routing no longer supported
+  default_external_proxy: ""
+  external_proxies: []
+  tls:
+    certificate_file: ""
+    key_file: ""
+    ca_file: ""
+    min_version: 0
+    max_version: 0
+    cipher_suites: []
+    prefer_server_cipher_suites: false
+    session_tickets_disabled: false
+    client_auth: ""
+    client_cas: ""
+    insecure_skip_verify: false
+    timeout: 0s
 
 pac:
-  local_ip: ""            # auto-discovered from tun0
-  enable_url_glob: false   # set true to preserve URL-glob rules (not recommended; native engine does not support URL-glob)
+  local_ip: ""
   dns_timeout: 500ms
   eval_timeout: 200ms
-  enable_dns_cache: true
+  enable_dns_cache: false
+  enable_url_glob: false
+  dns_max_entries: 100
+  dns_ttl: 5m
+  cache_enabled: false
+  cache_max_size: 10000
+  cache_ttl: 10m
 
 gfw:
-  source_url: "https://github.com/gfwlist/gfwlist/raw/refs/heads/master/gfwlist.txt"
+  disabled: false
+  source_url: "https://raw.githubusercontent.com/gfwlist/gfwlist/master/gfwlist.txt"
   local_rules_path: "/etc/proxy-pac/gfw-rules.json"
   user_rules_path: "/etc/proxy-pac/user-rules.json"
   update_interval: 24h
   fetch_on_startup: true
-  http_timeout: 30s
+  http_timeout: 60s
+  custom_dns_servers: []
+
+# Example external proxy configurations (uncomment and customize):
+# external_proxies:
+#   - id: "ssh-us"
+#     kind: "ssh"
+#     address: "user@ssh.example.com:22"
+#     auth_method: "password"
+#     password: "your_password"
+#     keepalive:
+#       enabled: true
+#       interval: 30s
+#   - id: "socks5-tw"
+#     kind: "socks5"
+#     address: "socks5.example.com:1080"
+#     username: "user"
+#     password: "pass"

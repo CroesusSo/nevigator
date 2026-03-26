@@ -11,7 +11,7 @@ import (
 // TestEvaluatorNativeEngine tests that a PAC with valid __PAC_RULES__ (object schema) uses the native engine.
 func TestEvaluatorNativeEngine(t *testing.T) {
 	// Hardcoded valid RulesFile JSON object
-	pac := `var __PAC_RULES__ = {"version":1,"rules":[{"id":"1","source":"test","enabled":true,"match":"exact","value":"exact.com","action":"PROXY","route":"TUN"},{"id":"2","source":"test","enabled":true,"match":"domain_suffix","value":".suffix.com","action":"PROXY","route":"SOCKS5 1.2.3.4:5678"}]}; function FindProxyForURL(url, host) { return 'DIRECT'; }`
+	pac := `var __PAC_RULES__ = {"version":1,"rules":[{"id":"1","source":"test","enabled":true,"match":"exact","value":"exact.com","action":"PROXY","route":"SOCKS5 1.2.3.4:5678"},{"id":"2","source":"test","enabled":true,"match":"domain_suffix","value":".suffix.com","action":"PROXY","route":"DIRECT"}]}; function FindProxyForURL(url, host) { return 'DIRECT'; }`
 	tmp := t.TempDir() + "/native.pac"
 	if err := os.WriteFile(tmp, []byte(pac), 0644); err != nil {
 		t.Fatal(err)
@@ -30,11 +30,11 @@ func TestEvaluatorNativeEngine(t *testing.T) {
 	}
 	defer e.Close()
 	// Verify native engine behavior
-	if r := e.Evaluate("exact.com"); r.Strategy != "TUN" {
-		t.Errorf("exact.com -> %v, want TUN", r)
+	if r := e.Evaluate("exact.com"); r.Strategy != "SOCKS5" {
+		t.Errorf("exact.com -> %v, want SOCKS5", r)
 	}
-	if r := e.Evaluate("foo.suffix.com"); r.Strategy != "SOCKS5" {
-		t.Errorf("foo.suffix.com -> %v, want SOCKS5", r)
+	if r := e.Evaluate("foo.suffix.com"); r.Strategy != "DIRECT" {
+		t.Errorf("foo.suffix.com -> %v, want DIRECT", r)
 	}
 	if r := e.Evaluate("unknown.com"); r.Strategy != "DIRECT" {
 		t.Errorf("unknown.com -> %v, want DIRECT", r)
@@ -44,7 +44,7 @@ func TestEvaluatorNativeEngine(t *testing.T) {
 // TestEvaluatorCacheDefaults tests that default cache parameters are applied when cache is enabled but size/ttl not set.
 func TestEvaluatorCacheDefaults(t *testing.T) {
 	// Use valid RulesFile object
-	pac := `var __PAC_RULES__ = {"version":1,"rules":[{"id":"1","source":"test","enabled":true,"match":"exact","value":"example.com","action":"PROXY","route":"TUN"}]}; function FindProxyForURL(url, host) { return 'DIRECT'; }`
+	pac := `var __PAC_RULES__ = {"version":1,"rules":[{"id":"1","source":"test","enabled":true,"match":"exact","value":"example.com","action":"PROXY","route":"SOCKS5 1.2.3.4:1080"}]}; function FindProxyForURL(url, host) { return 'DIRECT'; }`
 	tmp := t.TempDir() + "/default.pac"
 	if err := os.WriteFile(tmp, []byte(pac), 0644); err != nil {
 		t.Fatal(err)
@@ -107,10 +107,10 @@ func TestEvaluate_ExceptionOverridesBlacklist(t *testing.T) {
 // TestDeepestMatch_SuffixLongestWins tests that with deepest_match enabled,
 // the longest matching suffix wins over shorter ones, regardless of index.
 func TestDeepestMatch_SuffixLongestWins(t *testing.T) {
-	// Rules: .com (index 0) -> SOCKS5 A, .google.com (index 1) -> TUN
+	// Rules: .com (index 0) -> SOCKS5 A, .google.com (index 1) -> SOCKS5 B
 	pac := `var __PAC_RULES__ = {"version":1,"rules":[
 	{"id":"1","source":"test","enabled":true,"match":"domain_suffix","value":".com","action":"PROXY","route":"SOCKS5 1.2.3.4:1080"},
-	{"id":"2","source":"test","enabled":true,"match":"domain_suffix","value":".google.com","action":"PROXY","route":"TUN"}
+	{"id":"2","source":"test","enabled":true,"match":"domain_suffix","value":".google.com","action":"PROXY","route":"SOCKS5 5.6.7.8:1080"}
 ]}; function FindProxyForURL(url, host) { return 'DIRECT'; }`
 	tmp := t.TempDir() + "/deepest_suffix.pac"
 	if err := os.WriteFile(tmp, []byte(pac), 0644); err != nil {
@@ -131,9 +131,9 @@ func TestDeepestMatch_SuffixLongestWins(t *testing.T) {
 	}
 	defer e.Close()
 
-	// mail.google.com should match .google.com (longer suffix) -> TUN
-	if r := e.Evaluate("mail.google.com"); r.Strategy != "TUN" {
-		t.Errorf("mail.google.com -> %v, want TUN", r)
+	// mail.google.com should match .google.com (longer suffix) -> SOCKS5
+	if r := e.Evaluate("mail.google.com"); r.Strategy != "SOCKS5" {
+		t.Errorf("mail.google.com -> %v, want SOCKS5", r)
 	}
 	// example.com should match .com -> SOCKS5
 	if r := e.Evaluate("example.com"); r.Strategy != "SOCKS5" {
@@ -144,10 +144,10 @@ func TestDeepestMatch_SuffixLongestWins(t *testing.T) {
 // TestDeepestMatch_HostGlobSpecificity tests that with deepest_match enabled,
 // host glob patterns are sorted by specificity (more specific wins).
 func TestDeepestMatch_HostGlobSpecificity(t *testing.T) {
-	// Rules: *.com (index 0) -> SOCKS5 A, *.google.com (index 1) -> TUN, * (index 2) -> BLOCK
+	// Rules: *.com (index 0) -> SOCKS5 A, *.google.com (index 1) -> SOCKS5 B, * (index 2) -> DIRECT
 	pac := `var __PAC_RULES__ = {"version":1,"rules":[
 	{"id":"1","source":"test","enabled":true,"match":"host_glob","value":"*.com","action":"PROXY","route":"SOCKS5 1.2.3.4:1080"},
-	{"id":"2","source":"test","enabled":true,"match":"host_glob","value":"*.google.com","action":"PROXY","route":"TUN"},
+	{"id":"2","source":"test","enabled":true,"match":"host_glob","value":"*.google.com","action":"PROXY","route":"SOCKS5 5.6.7.8:1080"},
 	{"id":"3","source":"test","enabled":true,"match":"host_glob","value":"*","action":"PROXY","route":"DIRECT"}
 ]}; function FindProxyForURL(url, host) { return 'DIRECT'; }`
 	tmp := t.TempDir() + "/deepest_glob.pac"
@@ -169,9 +169,9 @@ func TestDeepestMatch_HostGlobSpecificity(t *testing.T) {
 	}
 	defer e.Close()
 
-	// mail.google.com should match *.google.com (more specific) -> TUN
-	if r := e.Evaluate("mail.google.com"); r.Strategy != "TUN" {
-		t.Errorf("mail.google.com -> %v, want TUN", r)
+	// mail.google.com should match *.google.com (more specific) -> SOCKS5
+	if r := e.Evaluate("mail.google.com"); r.Strategy != "SOCKS5" {
+		t.Errorf("mail.google.com -> %v, want SOCKS5", r)
 	}
 	// example.com should match *.com -> SOCKS5
 	if r := e.Evaluate("example.com"); r.Strategy != "SOCKS5" {
@@ -185,7 +185,7 @@ func TestDeepestMatch_Disabled(t *testing.T) {
 	// Same rules as suffix test but deepest_match=false
 	pac := `var __PAC_RULES__ = {"version":1,"rules":[
 	{"id":"1","source":"test","enabled":true,"match":"domain_suffix","value":".com","action":"PROXY","route":"SOCKS5 1.2.3.4:1080"},
-	{"id":"2","source":"test","enabled":true,"match":"domain_suffix","value":".google.com","action":"PROXY","route":"TUN"}
+	{"id":"2","source":"test","enabled":true,"match":"domain_suffix","value":".google.com","action":"PROXY","route":"SOCKS5 5.6.7.8:1080"}
 ]}; function FindProxyForURL(url, host) { return 'DIRECT'; }`
 	tmp := t.TempDir() + "/no_deepest.pac"
 	if err := os.WriteFile(tmp, []byte(pac), 0644); err != nil {
@@ -207,7 +207,7 @@ func TestDeepestMatch_Disabled(t *testing.T) {
 	defer e.Close()
 
 	// mail.google.com matches .google.com (longer suffix wins) regardless of deepest_match flag
-	if r := e.Evaluate("mail.google.com"); r.Strategy != "TUN" {
-		t.Errorf("mail.google.com -> %v, want TUN (longest suffix)", r)
+	if r := e.Evaluate("mail.google.com"); r.Strategy != "SOCKS5" {
+		t.Errorf("mail.google.com -> %v, want SOCKS5 (longest suffix)", r)
 	}
 }

@@ -36,8 +36,6 @@ type Server struct {
 	conns      map[string]*status.Connection
 	totalConns atomic.Int64
 	nextID     atomic.Int64
-	tunDevice  string
-	tunIP      net.IP
 	tlsConfig  *tls.Config
 }
 
@@ -50,7 +48,6 @@ func NewServer(cfg pac.ProxyConfig, evaluator *pac.Evaluator, router *router.Rou
 		socks5Conn: make(chan net.Conn, 100),
 		stopped:    make(chan struct{}),
 		conns:      make(map[string]*status.Connection),
-		tunDevice:  cfg.TUNDevice,
 	}
 	mux := http.NewServeMux()
 
@@ -221,13 +218,6 @@ func formatDest(host string, port int) string {
 	return fmt.Sprintf("%s:%d", host, port)
 }
 
-// SetTUNIP sets the TUN IP address (called from main after discovery).
-func (s *Server) SetTUNIP(ip net.IP) {
-	s.mu.Lock()
-	s.tunIP = ip
-	s.mu.Unlock()
-}
-
 // Start begins accepting connections.
 func (s *Server) Start() error {
 	go func() {
@@ -279,38 +269,14 @@ func (s *Server) untrackConnection(id string) {
 // Status returns the current server status.
 func (s *Server) Status() status.ServerStatus {
 	s.mu.RLock()
-	tunIP := s.tunIP
-	tunDevice := s.tunDevice
 	activeConns := len(s.conns)
 	s.mu.RUnlock()
-
-	tunUp := false
-	tunIPStr := ""
-	if tunIP != nil {
-		tunIPStr = tunIP.String()
-		// Re-check interface is still up
-		iface, err := net.InterfaceByName(tunDevice)
-		if err == nil {
-			addrs, err := iface.Addrs()
-			if err == nil {
-				for _, addr := range addrs {
-					if ipnet, ok := addr.(*net.IPNet); ok && ipnet.IP.To4() != nil {
-						tunUp = true
-						break
-					}
-				}
-			}
-		}
-	}
 
 	return status.ServerStatus{
 		HTTPListen:   s.cfg.HTTPListen,
 		SOCKS5Listen: s.cfg.SOCKS5Listen,
 		AdminListen:  s.cfg.AdminListen,
 		HTTPSListen:  s.cfg.HTTPSListen,
-		TUNDevice:    tunDevice,
-		TUNIP:        tunIPStr,
-		TUNUp:        tunUp,
 		ActiveConns:  activeConns,
 		TotalConns:   s.totalConns.Load(),
 	}

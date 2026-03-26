@@ -25,10 +25,7 @@
         <div class="kv"><span class="kv-key">SOCKS5 Proxy</span><span class="kv-val" id="s-socks5">-</span></div>
         <div class="kv"><span class="kv-key">Admin UI</span><span class="kv-val" id="s-admin">-</span></div>
       </div>
-      <div class="card">
-        <h3>Outgoing</h3>
-        <div class="kv"><span class="kv-key">TUN Device</span><span class="kv-val" id="s-tun">-</span></div>
-      </div>
+
       <div class="card">
         <h3>Connections</h3>
         <div class="kv"><span class="kv-key">Active</span><span class="kv-val" id="s-active">-</span></div>
@@ -73,9 +70,8 @@
            <input id="new-value" placeholder=".example.com">
            <label>Route</label>
            <select id="new-route">
-             <option value="DIRECT">DIRECT</option>
-             <option value="TUN">TUN</option>
-             <option value="SOCKS5 127.0.0.1:1080">SOCKS5 (default)</option>
+              <option value="DIRECT">DIRECT</option>
+              <option value="SOCKS5 127.0.0.1:1080">SOCKS5 (default)</option>
            </select>
           <button class="btn btn-primary" onclick="addRule()">Add</button>
           </div>
@@ -91,7 +87,7 @@
              <th width="50">On/Off</th>
              <th width="120">Match Type <span title="domain_suffix: match domain suffixes; host_glob: * and ? wildcards for hostnames; url_glob: * and ? wildcards for full URLs; exact: exact match">?</span></th>
              <th>Pattern</th>
-             <th width="180">Route <span title="DIRECT: no proxy; TUN: route through TUN device; SOCKS5: use upstream SOCKS5 proxy">?</span></th>
+             <th width="180">Route <span title="DIRECT: no proxy; SOCKS5: use upstream SOCKS5 proxy; EXTERNAL &lt;id&gt;: use external proxy; DEFAULT: use default proxy">?</span></th>
              <th width="120">Actions</th>
            </tr>
          </thead>
@@ -326,15 +322,11 @@
 
         <div class="card">
           <h3>Paths & Devices</h3>
-          <div class="form-row">
-            <label>PAC file path</label>
-            <input id="pac-path" value="/etc/proxy.pac">
-          </div>
-          <div class="form-row">
-            <label>TUN device</label>
-            <input id="tun-device" value="tun0">
-          </div>
-        </div>
+           <div class="form-row">
+             <label>PAC file path</label>
+             <input id="pac-path" value="/etc/proxy.pac">
+           </div>
+         </div>
 
         <div class="card">
           <h3>PAC Settings</h3>

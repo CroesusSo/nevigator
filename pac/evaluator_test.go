@@ -11,9 +11,9 @@ import (
 )
 
 func TestEvaluator(t *testing.T) {
-	// Create a simple PAC that routes example.com to TUN
+	// Create a simple PAC that routes example.com to SOCKS5
 	rules := []gfw.Rule{
-		{ID: "test", Source: "test", Enabled: true, Match: "exact", Value: "example.com", Action: "PROXY", Route: "TUN"},
+		{ID: "test", Source: "test", Enabled: true, Match: "exact", Value: "example.com", Action: "PROXY", Route: "SOCKS5 127.0.0.1:9050"},
 	}
 	pac := gfw.GeneratePAC(rules, nil, gfw.FWMeta{})
 	tmp := t.TempDir() + "/test.pac"
@@ -36,14 +36,14 @@ func TestEvaluator(t *testing.T) {
 	defer ev.Close()
 
 	route := ev.Evaluate("example.com")
-	if route.Strategy != "TUN" {
-		t.Errorf("Expected TUN, got %v", route)
+	if route.Strategy != "SOCKS5" {
+		t.Errorf("Expected SOCKS5, got %v", route)
 	}
 }
 
 func TestEvaluatorSyntaxError(t *testing.T) {
 	// Invalid JSON in __PAC_RULES__
-	pac := `var __PAC_RULES__ = {invalid json}; function FindProxyForURL(url, host) { return "TUN"; }`
+	pac := `var __PAC_RULES__ = {invalid json}; function FindProxyForURL(url, host) { return "SOCKS5 127.0.0.1:9050"; }`
 	tmp := t.TempDir() + "/invalid.pac"
 	if err := os.WriteFile(tmp, []byte(pac), 0644); err != nil {
 		t.Fatal(err)
@@ -143,7 +143,7 @@ func TestCustomPAC_RoutesGoogleToTUN(t *testing.T) {
 
 	// Create a PAC with a rule for google.com to TUN
 	rules := []gfw.Rule{
-		{ID: "1", Source: "user", Enabled: true, Match: "domain_suffix", Value: ".google.com", Route: "TUN"},
+		{ID: "1", Source: "user", Enabled: true, Match: "domain_suffix", Value: ".google.com", Route: "SOCKS5 127.0.0.1:1080"},
 	}
 	pac := gfw.GeneratePAC(rules, nil, gfw.FWMeta{})
 	if err := os.WriteFile(pacPath, []byte(pac), 0644); err != nil {
@@ -167,8 +167,8 @@ func TestCustomPAC_RoutesGoogleToTUN(t *testing.T) {
 	hosts := []string{"google.com", "www.google.com", "mail.google.com"}
 	for _, host := range hosts {
 		route := ev.Evaluate(host)
-		if route.Strategy != "TUN" {
-			t.Errorf("Custom PAC should return TUN for %s, got %v", host, route)
+		if route.Strategy != "SOCKS5" {
+			t.Errorf("Custom PAC should return SOCKS5 for %s, got %v", host, route)
 		}
 	}
 }

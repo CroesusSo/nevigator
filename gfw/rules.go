@@ -29,7 +29,7 @@ type Rule struct {
 	Match   MatchType `json:"match"`
 	Value   string    `json:"value"`
 	Action  string    `json:"action"` // "PROXY" or "DIRECT" (for exceptions)
-	Route   string    `json:"route"`  // resolved route: "TUN", "SOCKS5 x:port"
+	Route   string    `json:"route"`  // resolved route: "SOCKS5 host:port", "EXTERNAL id", "DIRECT", "DEFAULT"
 }
 
 // RulesFile represents the full rules document stored as JSON.

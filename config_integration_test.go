@@ -48,7 +48,6 @@ func TestConfigAPI_IntegrationRoundTrip(t *testing.T) {
   admin_listen: "127.0.0.1:9090"
   https_listen: ":8443"
   pac_path: "%s"
-  tun_device: "tun0"
   default_external_proxy: ""
   external_proxies: []
   tls:
@@ -77,7 +76,6 @@ func TestConfigAPI_IntegrationRoundTrip(t *testing.T) {
 
 	// Create router
 	r, err := router.NewRouter(pac.RouterConfig{
-		TUNIP:       nil,
 		DialTimeout: 5 * time.Second,
 	})
 	if err != nil {

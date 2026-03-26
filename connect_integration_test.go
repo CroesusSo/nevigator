@@ -42,7 +42,6 @@ func TestConnectRouting(t *testing.T) {
 		HTTPListen:   "127.0.0.1:28080",
 		SOCKS5Listen: "",
 		PACPath:      pacPath,
-		TUNDevice:    "", // disabled
 	}
 
 	evalCfg := pac.EvaluatorConfig{
@@ -60,7 +59,6 @@ func TestConnectRouting(t *testing.T) {
 	defer evaluator.Close()
 
 	routerCfg := pac.RouterConfig{
-		TUNIP:       nil,
 		DialTimeout: 5 * time.Second,
 	}
 	r, err := router.NewRouter(routerCfg)

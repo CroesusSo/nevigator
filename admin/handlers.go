@@ -131,7 +131,6 @@ type FullConfig struct {
 		AdminListen          string              `yaml:"admin_listen" json:"admin_listen"`
 		HTTPSListen          string              `yaml:"https_listen" json:"https_listen"` // HTTPS proxy listener address (default :8443)
 		PACPath              string              `yaml:"pac_path" json:"pac_path"`
-		TUNDevice            string              `yaml:"tun_device" json:"tun_device"`
 		DefaultExternalProxy string              `yaml:"default_external_proxy" json:"default_external_proxy"`
 		ExternalProxies      []pac.ExternalProxy `yaml:"external_proxies" json:"external_proxies"`
 		TLS                  pac.TLSConfig       `yaml:"tls" json:"tls"` // TLS configuration for HTTPS proxy (certificate, key, CA, client auth)
@@ -153,7 +152,6 @@ type FullConfig struct {
 		SourceURL        string        `yaml:"source_url" json:"source_url"`
 		LocalRulesPath   string        `yaml:"local_rules_path" json:"local_rules_path"`
 		UserRulesPath    string        `yaml:"user_rules_path" json:"user_rules_path"`
-		UseTUN           bool          `yaml:"use_tun" json:"use_tun"`
 		UpdateInterval   time.Duration `yaml:"update_interval" json:"update_interval"`
 		FetchOnStartup   bool          `yaml:"fetch_on_startup" json:"fetch_on_startup"`
 		HTTPTimeout      time.Duration `yaml:"http_timeout" json:"http_timeout"`
@@ -1003,7 +1001,7 @@ func (h *Handler) handleCreateProxy(w http.ResponseWriter, r *http.Request) {
 	}
 	// Reserved ID check
 	switch newProxy.ID {
-	case "DIRECT", "TUN", "DEFAULT":
+	case "DIRECT", "DEFAULT":
 		http.Error(w, "reserved proxy id", http.StatusBadRequest)
 		return
 	}
@@ -1386,7 +1384,7 @@ func (h *Handler) handleConfig(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// handleGetConfig returns current proxy configuration (listeners, pac_path, tun_device, default_external_proxy).
+// handleGetConfig returns current proxy configuration (listeners, pac_path, default_external_proxy).
 func (h *Handler) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 	status := h.statusProvider.Status()
 	cfg := struct {
@@ -1395,7 +1393,6 @@ func (h *Handler) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 		AdminListen          string `json:"admin_listen"`
 		HTTPSListen          string `json:"https_listen"`
 		PACPath              string `json:"pac_path"`
-		TUNDevice            string `json:"tun_device"`
 		DefaultExternalProxy string `json:"default_external_proxy"`
 		PAC                  struct {
 			LocalIP        string `json:"local_ip"`
@@ -1427,7 +1424,6 @@ func (h *Handler) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 		var full FullConfig
 		if err := yaml.Unmarshal(data, &full); err == nil {
 			cfg.PACPath = full.Proxy.PACPath
-			cfg.TUNDevice = full.Proxy.TUNDevice
 			cfg.DefaultExternalProxy = full.Proxy.DefaultExternalProxy
 			cfg.HTTPSListen = full.Proxy.HTTPSListen
 			cfg.PAC.LocalIP = full.PAC.LocalIP
@@ -1516,9 +1512,6 @@ func (h *Handler) handlePutConfig(w http.ResponseWriter, r *http.Request) {
 	}
 	if upd.PACPath != "" {
 		cfg.Proxy.PACPath = upd.PACPath
-	}
-	if upd.TUNDevice != "" {
-		cfg.Proxy.TUNDevice = upd.TUNDevice
 	}
 	if upd.DefaultExternalProxy != "" && upd.DefaultExternalProxy != cfg.Proxy.DefaultExternalProxy {
 		cfg.Proxy.DefaultExternalProxy = upd.DefaultExternalProxy

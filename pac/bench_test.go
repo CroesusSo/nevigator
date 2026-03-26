@@ -21,7 +21,7 @@ func generateLargeNativePAC(numRules int) (string, error) {
 			Match:   gfw.MatchDomainSuffix,
 			Value:   value,
 			Action:  "PROXY",
-			Route:   "TUN",
+			Route:   "SOCKS5 127.0.0.1:1080",
 		})
 	}
 	rf := gfw.RulesFile{Version: 1, Rules: rules}

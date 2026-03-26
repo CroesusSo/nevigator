@@ -1,13 +1,14 @@
-# Capability: PAC-Enabled Proxy with TUN Routing
+# Capability: PAC-Enabled Proxy Routing
 
 ## Overview
 
 This system implements a high-performance proxy server that:
 - Accepts HTTP CONNECT and SOCKS5 client connections
 - Evaluates **structured routing rules** (not JavaScript) to determine outbound path
-- Supports three routing strategies:
-  - `TUN`: force traffic through a TUN device (VPN tunnel)
+- Supports the following routing strategies:
   - `SOCKS5 upstream`: route through a remote SOCKS5 server
+  - `EXTERNAL <id>`: route through a registered external proxy (supports authentication)
+  - `DEFAULT`: use the configured default external proxy
   - `DIRECT`: use system default routing (respects OS routing table)
 - Falls back to `DIRECT` if the chosen route fails
 - Provides a web-based admin UI for rule management and hot-reload
@@ -20,7 +21,7 @@ This system implements a high-performance proxy server that:
 
 ```go
 type Route struct {
-    Strategy   string // "TUN", "SOCKS5", "DIRECT", "EXTERNAL", "DEFAULT"
+    Strategy   string // "SOCKS5", "DIRECT", "EXTERNAL", "DEFAULT"
     Address    string // required for SOCKS5
     ExternalID string // used when Strategy == "EXTERNAL"
 }
@@ -60,9 +61,8 @@ type Router interface {
 2. Proxy parses destination hostname from request
 3. Calls `Evaluator.Evaluate(host)` to obtain a `Route`
 4. Router establishes outbound connection according to `route`:
-   - `TUN`: binds socket to TUN interface IP
-   - `SOCKS5`: connects to upstream SOCKS5 server and performs handshake
-   - `EXTERNAL <id>`: looks up proxy from registry by ID
+   - `SOCKS5 host:port`: connects to upstream SOCKS5 server and performs handshake
+   - `EXTERNAL <id>`: looks up proxy from registry by ID (supports optional authentication)
    - `DEFAULT`: uses the configured default external proxy
    - `DIRECT`: normal `net.Dial` (OS routing)
 5. If route establishment fails (and `route != DIRECT`), Router automatically retries with `DIRECT`
@@ -75,8 +75,8 @@ PAC files **must** contain a JavaScript variable `__PAC_RULES__` with a JSON obj
 
 ```javascript
 var __PAC_RULES__ = {"version":1,"rules":[
-  {"id":"1","match":"exact","value":"example.com","route":"TUN"},
-  {"id":"2","match":"domain_suffix","value":".google.com","route":"SOCKS5 127.0.0.1:9050"},
+  {"id":"1","match":"exact","value":"example.com","route":"SOCKS5 127.0.0.1:1080"},
+  {"id":"2","match":"domain_suffix","value":".google.com","route":"EXTERNAL tor"},
   {"id":"3","match":"host_glob","value":"*.onion","route":"DIRECT"}
 ]};
 function FindProxyForURL(url, host) { return 'DIRECT'; }
@@ -89,8 +89,8 @@ The `FindProxyForURL` function is **ignored**; it exists only to satisfy legacy 
 - `id`: unique string identifier
 - `match`: match type — `exact`, `domain_suffix`, `host_glob` (URL-glob not supported)
 - `value`: pattern to match (exact hostname, leading dot for suffix, `*` wildcards for host glob)
-- `route`: routing decision — `"TUN"`, `"SOCKS5 host:port"`, `"EXTERNAL <id>"`, `"DEFAULT"`, `"DIRECT"`
- - `enabled`: boolean (default true)
+- `route`: routing decision — `"SOCKS5 host:port"`, `"EXTERNAL <id>"`, `"DEFAULT"`, `"DIRECT"`
+- `enabled`: boolean (default true)
 
 Rules are evaluated in ascending `id` order. The native engine always uses deepest match semantics:
 - For `domain_suffix`: the longest matching suffix wins (most specific)
@@ -108,18 +108,17 @@ proxy:
   socks5_listen: 0.0.0.0:1080
   admin_listen: 127.0.0.1:9090
   pac_path: /etc/proxy.pac
-  tun_device: tun0
   default_external_proxy: ""
   external_proxies: []  # list of {id, address, username, password}
 
- pac:
-   enable_dns_cache: true  # DNS cache for internal lookups (not used for user PAC)
-   dns_max_entries: 100    # max DNS cache entries (0 = unlimited)
-   dns_ttl: 5m             # DNS cache TTL
-   cache_enabled: true     # enable PAC result caching
-   cache_max_size: 10000   # max cached hosts
-   cache_ttl: 10m          # cache TTL
- ```
+pac:
+  enable_dns_cache: true  # DNS cache for internal lookups (not used for user PAC)
+  dns_max_entries: 100    # max DNS cache entries (0 = unlimited)
+  dns_ttl: 5m             # DNS cache TTL
+  cache_enabled: true     # enable PAC result caching
+  cache_max_size: 10000   # max cached hosts
+  cache_ttl: 10m          # cache TTL
+```
 
 ## Native Rule Engine
 
@@ -133,7 +132,7 @@ The native engine provides **>100× performance improvement** over a JavaScript 
 
 ### Performance
 
-- Un cached evaluation: < 1 µs for simple rule sets
+- Un-cached evaluation: < 1 µs for simple rule sets
 - LRU cache (optional) can serve repeated hosts in < 100 ns
 - Memory footprint: ~1 MB for 10k cached entries
 
@@ -167,12 +166,6 @@ Unit tests for native engine (exact, suffix, host glob, deepest match), cache, D
 - PAC visual editor
 - Eventually make `deepest_match` the default (with deprecation period)
 
-## ADDED Requirements (from external-proxy-registry)
+## Related Specs
 
-The full external proxy registry and DEFAULT behavior are documented in `openspec/specs/external-proxy-registry/spec.md`. Key points:
-
-- Registry of external SOCKS5 proxies with optional credentials
-- Manageable via Admin UI and `/api/proxies` REST API
-- `EXTERNAL <id>` and `DEFAULT` route strategies look up proxies from this registry
-- Validation to prevent loops and reserved IDs
-- Atomic config updates
+- **External Proxy Registry**: `openspec/specs/external-proxy-registry/spec.md` — full documentation on managing external proxies with optional authentication, the registry implementation, and validation rules.

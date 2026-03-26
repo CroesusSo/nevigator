@@ -40,7 +40,6 @@ func TestParsePACResult(t *testing.T) {
 		want  Route
 	}{
 		{"DIRECT", Route{Strategy: "DIRECT"}},
-		{"TUN", Route{Strategy: "TUN"}},
 		{"SOCKS5 1.2.3.4:1080", Route{Strategy: "SOCKS5", Address: "1.2.3.4:1080"}},
 		{"SOCKS5", Route{Strategy: "DIRECT"}}, // malformed
 		{"PROXY foo:8080", Route{Strategy: "DIRECT"}},

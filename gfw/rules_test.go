@@ -9,7 +9,7 @@ import (
 
 func TestRuleJSONRoundTrip(t *testing.T) {
 	rules := []Rule{
-		{ID: "usr-001", Source: "user", Enabled: true, Match: MatchDomainSuffix, Value: ".internal.corp", Action: "PROXY", Route: "TUN"},
+		{ID: "usr-001", Source: "user", Enabled: true, Match: MatchDomainSuffix, Value: ".internal.corp", Action: "PROXY", Route: "SOCKS5 127.0.0.1:1080"},
 		{ID: "usr-002", Source: "user", Enabled: true, Match: MatchHostGlob, Value: "*.onion", Action: "PROXY", Route: "SOCKS5 127.0.0.1:9050"},
 		{ID: "gfw-001", Source: "gfw", Enabled: true, Match: MatchDomainSuffix, Value: ".google.com", Action: "PROXY", Route: "SOCKS5 127.0.0.1:1080"},
 		{ID: "gfw-002", Source: "gfw", Enabled: false, Match: MatchExact, Value: "1.2.3.4", Action: "PROXY", Route: "SOCKS5 127.0.0.1:1080"},
@@ -65,7 +65,7 @@ func TestRuleStoreLoadSave(t *testing.T) {
 
 	// Save rules
 	input := []Rule{
-		{ID: "1", Source: "user", Enabled: true, Match: MatchDomainSuffix, Value: ".test.com", Action: "PROXY", Route: "TUN"},
+		{ID: "1", Source: "user", Enabled: true, Match: MatchDomainSuffix, Value: ".test.com", Action: "PROXY", Route: "SOCKS5 127.0.0.1:1080"},
 	}
 	if err := store.Save(input); err != nil {
 		t.Fatalf("save: %v", err)

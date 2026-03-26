@@ -73,6 +73,7 @@ target/
 *.ipr
 *.iws
 *.iml
+*.code-workspace
 
 # OS
 .DS_Store

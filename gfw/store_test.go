@@ -13,7 +13,7 @@ func TestRuleManagerCreate(t *testing.T) {
 	rule, err := mgr.Create(Rule{
 		Match: MatchDomainSuffix,
 		Value: ".test.com",
-		Route: "TUN",
+		Route: "SOCKS5 127.0.0.1:1080",
 	})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
@@ -46,7 +46,7 @@ func TestRuleManagerUpdate(t *testing.T) {
 	created, err := mgr.Create(Rule{
 		Match: MatchDomainSuffix,
 		Value: ".test.com",
-		Route: "TUN",
+		Route: "SOCKS5 127.0.0.1:1080",
 	})
 	if err != nil {
 		t.Fatal(err)

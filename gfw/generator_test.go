@@ -7,7 +7,7 @@ import (
 
 func TestGeneratePACBasic(t *testing.T) {
 	userRules := []Rule{
-		{ID: "usr-1", Source: "user", Enabled: true, Match: MatchDomainSuffix, Value: ".internal.corp", Route: "TUN"},
+		{ID: "usr-1", Source: "user", Enabled: true, Match: MatchDomainSuffix, Value: ".internal.corp", Route: "SOCKS5 127.0.0.1:1080"},
 	}
 	gfwRules := []Rule{
 		{ID: "gfw-1", Source: "gfw", Enabled: true, Match: MatchDomainSuffix, Value: ".google.com", Route: "SOCKS5 127.0.0.1:1080"},
@@ -49,7 +49,7 @@ func TestGeneratePACBasic(t *testing.T) {
 
 func TestGeneratePACDisabledRules(t *testing.T) {
 	userRules := []Rule{
-		{ID: "usr-1", Source: "user", Enabled: false, Match: MatchDomainSuffix, Value: ".disabled.com", Route: "TUN"},
+		{ID: "usr-1", Source: "user", Enabled: false, Match: MatchDomainSuffix, Value: ".disabled.com", Route: "SOCKS5 127.0.0.1:1080"},
 	}
 	gfwRules := []Rule{
 		{ID: "gfw-1", Source: "gfw", Enabled: true, Match: MatchDomainSuffix, Value: ".google.com", Route: "SOCKS5 127.0.0.1:1080"},
@@ -74,9 +74,9 @@ func TestGeneratePACDisabledRules(t *testing.T) {
 
 func TestGeneratePACMatchTypes(t *testing.T) {
 	rules := []Rule{
-		{ID: "1", Source: "user", Enabled: true, Match: MatchDomainSuffix, Value: ".example.com", Route: "TUN"},
+		{ID: "1", Source: "user", Enabled: true, Match: MatchDomainSuffix, Value: ".example.com", Route: "SOCKS5 127.0.0.1:1080"},
 		{ID: "2", Source: "user", Enabled: true, Match: MatchHostGlob, Value: "*.onion", Route: "SOCKS5 127.0.0.1:9050"},
-		{ID: "4", Source: "user", Enabled: true, Match: MatchExact, Value: "192.168.1.1", Route: "TUN"},
+		{ID: "4", Source: "user", Enabled: true, Match: MatchExact, Value: "192.168.1.1", Route: "SOCKS5 127.0.0.1:1080"},
 	}
 
 	pac := GeneratePAC(rules, nil, FWMeta{})
@@ -110,7 +110,7 @@ func TestGeneratePACEmpty(t *testing.T) {
 
 func TestGeneratePACJSONComment(t *testing.T) {
 	userRules := []Rule{
-		{ID: "usr-1", Source: "user", Enabled: true, Match: MatchDomainSuffix, Value: ".test.com", Route: "TUN"},
+		{ID: "usr-1", Source: "user", Enabled: true, Match: MatchDomainSuffix, Value: ".test.com", Route: "SOCKS5 127.0.0.1:1080"},
 	}
 	gfwRules := []Rule{
 		{ID: "gfw-1", Source: "gfw", Enabled: true, Match: MatchDomainSuffix, Value: ".google.com", Route: "SOCKS5 127.0.0.1:1080"},

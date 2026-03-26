@@ -103,7 +103,6 @@ func TestHTTPSProxy_ListenerStartup(t *testing.T) {
 	defer evaluator.Close()
 
 	routerCfg := pac.RouterConfig{
-		TUNIP:       nil,
 		DialTimeout: 5 * time.Second,
 	}
 	r, err := router.NewRouter(routerCfg)
@@ -169,7 +168,7 @@ func TestHTTPSProxy_DisabledWhenNoTLS(t *testing.T) {
 	}
 	defer evaluator.Close()
 
-	routerCfg := pac.RouterConfig{TUNIP: nil}
+	routerCfg := pac.RouterConfig{}
 	r, err1 := router.NewRouter(routerCfg)
 	if err1 != nil {
 		t.Fatalf("NewRouter: %v", err1)
@@ -252,7 +251,6 @@ func TestHTTPConnect_IPv6(t *testing.T) {
 	defer evaluator.Close()
 
 	routerCfg := pac.RouterConfig{
-		TUNIP:       nil,
 		DialTimeout: 5 * time.Second,
 	}
 	r, err := router.NewRouter(routerCfg)
@@ -377,7 +375,6 @@ func TestSOCKS5Connect_IPv6_Direct(t *testing.T) {
 	defer evaluator.Close()
 
 	routerCfg := pac.RouterConfig{
-		TUNIP:       nil,
 		DialTimeout: 5 * time.Second,
 	}
 	r, err := router.NewRouter(routerCfg)
@@ -553,7 +550,6 @@ func TestSOCKS5Connect_IPv6_Upstream(t *testing.T) {
 	defer evaluator.Close()
 
 	routerCfg := pac.RouterConfig{
-		TUNIP:       nil,
 		DialTimeout: 5 * time.Second,
 	}
 	r, err := router.NewRouter(routerCfg)
