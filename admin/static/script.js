@@ -3,11 +3,13 @@ let allProxies = [];
 let currentDefaultProxy = '';
 let userRules = [];
 let gfwRules = [];
- let editRowId = null;
- let gfwRowHeight = 0;
- let gfwVisibleStart = 0;
- let gfwVisibleEnd = 0;
- let gfwLoaded = false;
+let editRowId = null;
+let gfwRowHeight = 0;
+let gfwVisibleStart = 0;
+let gfwVisibleEnd = 0;
+let gfwLoaded = false;
+let currentEditProxyId = null;
+let currentEditProxyKind = null;
 
   const tooltips = {
     match: {
@@ -59,7 +61,7 @@ let gfwRules = [];
    if (name === 'gfw') { loadGFWStatus(); loadConfig(); }
    if (name === 'proxies') { loadProxies(); loadConfig(); }
    if (name === 'settings') { loadConfig(); }
-  }
+ }
 
   function fmtDuration(ms) {
     var s = Math.floor(ms / 1000);
@@ -82,17 +84,37 @@ let gfwRules = [];
     }
   }
 
- async function loadStatus() {
-   const res = await fetch('/api/status');
-   const d = await res.json();
+  async function loadStatus() {
+    const res = await fetch('/api/status');
+    const d = await res.json();
     document.getElementById('s-http').textContent = d.httpListen || '-';
     document.getElementById('s-socks5').textContent = d.socks5Listen || '-';
+    document.getElementById('s-https').textContent = d.httpsListen || '-';
     document.getElementById('s-admin').textContent = d.adminListen || '-';
     document.getElementById('s-active').textContent = d.activeConns != null ? d.activeConns : '-';
-   document.getElementById('s-total').textContent = d.totalConns != null ? d.totalConns : '-';
- }
+    document.getElementById('s-total').textContent = d.totalConns != null ? d.totalConns : '-';
+    // Load tunnels
+    renderTunnels(d.sshTunnels);
+  }
 
- async function loadConnections() {
+  function renderTunnels(tunnels) {
+    const tbody = document.getElementById('tunnels-body');
+    const empty = document.getElementById('tunnels-empty');
+    tbody.innerHTML = '';
+    const entries = Object.entries(tunnels || {});
+    if (entries.length === 0) {
+      empty.style.display = 'block';
+      return;
+    }
+    empty.style.display = 'none';
+    entries.forEach(([id, info]) => {
+      const tr = document.createElement('tr');
+      tr.innerHTML = `<td>${escHtml(id)}</td><td>${escHtml(info.remoteAddr || '-')}</td><td>${escHtml(info.state || '-')}</td><td>${info.lastError ? escHtml(info.lastError) : '-'}</td>`;
+      tbody.appendChild(tr);
+    });
+  }
+
+  async function loadConnections() {
    const res = await fetch('/api/connections');
    const list = await res.json();
    const tbody = document.getElementById('conn-body');
@@ -752,33 +774,20 @@ let gfwRules = [];
        .catch(e => alert('Error: ' + e.message));
      }
 
-  function editProxy(id) {
-    const p = allProxies.find(x => x.id === id);
-    if (!p) return;
-    const newId = prompt('Edit ID (cannot change):', p.id);
-    if (newId === null) return;
-    const newAddr = prompt('Address:', p.address);
-    if (newAddr === null) return;
-    const newUser = prompt('Username (leave unchanged if empty):', p.username || '');
-    const newPass = prompt('Password (leave unchanged if empty):', '');
-    const payload = { address: newAddr };
-    if (newUser !== '') payload.username = newUser;
-    if (newPass !== '') payload.password = newPass;
-    fetch('/api/proxies/' + encodeURIComponent(id), {
-      method: 'PUT',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify(payload)
-    })
-    .then(r => {
-      if (r.ok) return r.json();
-      return r.text().then(txt => { throw new Error(txt); });
-    })
-    .then(data => {
-      loadProxies();
-      alert('Updated');
-    })
-    .catch(e => alert('Error: ' + e.message));
-  }
+   function editProxy(id) {
+     const p = allProxies.find(x => x.id === id);
+     if (!p) return;
+     // Close any open edit modal
+     closeEditSocks5Modal();
+     closeEditSSHModal();
+     // Determine kind (default to socks5 if unspecified)
+     const kind = p.kind || 'socks5';
+     if (kind === 'ssh') {
+       showEditSSHModal(id);
+     } else {
+       showEditSocks5Modal(id);
+     }
+   }
 
   function deleteProxy(id) {
     if (!confirm('Delete proxy ' + id + '?')) return;
@@ -793,14 +802,196 @@ let gfwRules = [];
       .catch(e => alert('Error: ' + e.message));
   }
 
-  function testProxy(id) {
-    fetch('/api/proxies/' + encodeURIComponent(id) + '/test', { method: 'POST' })
+   function testProxy(id) {
+     fetch('/api/proxies/' + encodeURIComponent(id) + '/test', { method: 'POST' })
+       .then(r => r.json())
+       .then(data => {
+         if (data.success) {
+           alert('Proxy test succeeded');
+         } else {
+           alert('Proxy test failed: ' + data.error);
+         }
+       })
+       .catch(e => alert('Error: ' + e.message));
+   }
+
+  function toggleEditSSHAuthFields() {
+    const authMethod = document.getElementById('edit-ssh-auth-method').value;
+    document.getElementById('edit-ssh-password-field').style.display = authMethod === 'password' ? '' : 'none';
+    document.getElementById('edit-ssh-key-path-field').style.display = authMethod === 'key' ? '' : 'none';
+  }
+
+  function toggleEditSSHKeepalive() {
+    const enabled = document.getElementById('edit-ssh-keepalive-enabled').checked;
+    const intervalSpan = document.querySelector('#edit-ssh-keepalive-interval').parentElement;
+    if (intervalSpan) intervalSpan.style.display = enabled ? '' : 'none';
+  }
+
+  function showEditSocks5Modal(id) {
+    fetch('/api/proxies/' + encodeURIComponent(id))
+      .then(r => r.json())
+      .then(proxy => {
+        document.getElementById('edit-socks5-id').textContent = proxy.id;
+        document.getElementById('edit-socks5-addr').value = proxy.address || '';
+        document.getElementById('edit-socks5-user').value = proxy.username || '';
+        document.getElementById('edit-socks5-pass').value = proxy.password || '';
+        document.getElementById('edit-socks5-test-result').textContent = '';
+        document.getElementById('edit-socks5-modal').style.display = 'block';
+        document.getElementById('edit-socks5-overlay').style.display = 'block';
+        currentEditProxyId = id;
+        currentEditProxyKind = 'socks5';
+      })
+      .catch(err => {
+        console.error('Failed to fetch proxy:', err);
+        alert('Error loading proxy: ' + err.message);
+      });
+  }
+
+  function showEditSSHModal(id) {
+    fetch('/api/proxies/' + encodeURIComponent(id))
+      .then(r => r.json())
+      .then(proxy => {
+        document.getElementById('edit-ssh-id').textContent = proxy.id;
+        document.getElementById('edit-ssh-addr').value = proxy.address || '';
+        document.getElementById('edit-ssh-port').value = proxy.ssh_port || 22;
+        document.getElementById('edit-ssh-user').value = proxy.username || '';
+        document.getElementById('edit-ssh-auth-method').value = proxy.auth_method || 'password';
+        document.getElementById('edit-ssh-pass').value = proxy.password || '';
+        document.getElementById('edit-ssh-private-key-path').value = proxy.private_key_path || '';
+        document.getElementById('edit-ssh-host-key-check').value = proxy.host_key_check || 'strict';
+        document.getElementById('edit-ssh-host-key-fingerprint').value = proxy.host_key_fingerprint || '';
+        // Keepalive
+        const keepaliveEnabled = proxy.keepalive && proxy.keepalive.enabled;
+        const keepaliveInterval = proxy.keepalive && proxy.keepalive.interval ? String(proxy.keepalive.interval) : '';
+        document.getElementById('edit-ssh-keepalive-enabled').checked = keepaliveEnabled;
+        document.getElementById('edit-ssh-keepalive-interval').value = keepaliveInterval;
+        // Toggle field visibility based on current values
+        toggleEditSSHAuthFields();
+        toggleEditSSHKeepalive();
+        document.getElementById('edit-ssh-test-result').textContent = '';
+        document.getElementById('edit-ssh-modal').style.display = 'block';
+        document.getElementById('edit-ssh-overlay').style.display = 'block';
+        currentEditProxyId = id;
+        currentEditProxyKind = 'ssh';
+      })
+      .catch(err => {
+        console.error('Failed to fetch proxy:', err);
+        alert('Error loading proxy: ' + err.message);
+      });
+  }
+
+  function saveEditSocks5Proxy() {
+    const id = currentEditProxyId;
+    if (!id) return;
+    const addr = document.getElementById('edit-socks5-addr').value.trim();
+    const user = document.getElementById('edit-socks5-user').value.trim();
+    const pass = document.getElementById('edit-socks5-pass').value;
+    const payload = { address: addr };
+    if (user) payload.username = user;
+    if (pass) payload.password = pass;
+    fetch('/api/proxies/' + encodeURIComponent(id), {
+      method: 'PUT',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify(payload)
+    })
+    .then(r => {
+      if (r.ok) {
+        closeEditSocks5Modal();
+        loadProxies();
+        alert('Updated');
+      } else {
+        return r.text().then(txt => { throw new Error(txt); });
+      }
+    })
+    .catch(e => alert('Error: ' + e.message));
+  }
+
+  function saveEditSSHProxy() {
+    const id = currentEditProxyId;
+    if (!id) return;
+    const addr = document.getElementById('edit-ssh-addr').value.trim();
+    const user = document.getElementById('edit-ssh-user').value.trim();
+    const pass = document.getElementById('edit-ssh-pass').value;
+    const port = document.getElementById('edit-ssh-port').value;
+    const authMethod = document.getElementById('edit-ssh-auth-method').value;
+    const privateKeyPath = document.getElementById('edit-ssh-private-key-path').value.trim();
+    const hostKeyCheck = document.getElementById('edit-ssh-host-key-check').value;
+    const hostKeyFingerprint = document.getElementById('edit-ssh-host-key-fingerprint').value.trim();
+    const keepaliveEnabled = document.getElementById('edit-ssh-keepalive-enabled').checked;
+    const keepaliveInterval = document.getElementById('edit-ssh-keepalive-interval').value.trim();
+
+    const payload = { address: addr };
+    if (user) payload.username = user;
+    if (pass) payload.password = pass;
+    payload.kind = 'ssh';
+    payload.ssh_port = parseInt(port) || 22;
+    payload.auth_method = authMethod;
+    if (authMethod === 'key') {
+      payload.private_key_path = privateKeyPath;
+    } else {
+      payload.password = pass;
+    }
+    payload.host_key_check = hostKeyCheck;
+    if (hostKeyFingerprint) payload.host_key_fingerprint = hostKeyFingerprint;
+    if (keepaliveEnabled) {
+      payload.keepalive_enabled = true;
+      if (keepaliveInterval) payload.keepalive_interval = keepaliveInterval;
+    } else {
+      payload.keepalive_enabled = false;
+    }
+
+    fetch('/api/proxies/' + encodeURIComponent(id), {
+      method: 'PUT',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify(payload)
+    })
+    .then(r => {
+      if (r.ok) {
+        closeEditSSHModal();
+        loadProxies();
+        alert('Updated');
+      } else {
+        return r.text().then(txt => { throw new Error(txt); });
+      }
+    })
+    .catch(e => alert('Error: ' + e.message));
+  }
+
+  function closeEditSocks5Modal() {
+    document.getElementById('edit-socks5-modal').style.display = 'none';
+    document.getElementById('edit-socks5-overlay').style.display = 'none';
+    currentEditProxyId = null;
+    currentEditProxyKind = null;
+  }
+
+  function closeEditSSHModal() {
+    document.getElementById('edit-ssh-modal').style.display = 'none';
+    document.getElementById('edit-ssh-overlay').style.display = 'none';
+    currentEditProxyId = null;
+    currentEditProxyKind = null;
+  }
+
+  function testProxyFromEdit() {
+    if (!currentEditProxyId) return;
+    fetch('/api/proxies/' + encodeURIComponent(currentEditProxyId) + '/test', { method: 'POST' })
       .then(r => r.json())
       .then(data => {
-        if (data.success) {
-          alert('Proxy test succeeded');
-        } else {
-          alert('Proxy test failed: ' + data.error);
+        const socks5Modal = document.getElementById('edit-socks5-modal');
+        const sshModal = document.getElementById('edit-ssh-modal');
+        let resultSpan;
+        if (socks5Modal.style.display === 'block') {
+          resultSpan = document.getElementById('edit-socks5-test-result');
+        } else if (sshModal.style.display === 'block') {
+          resultSpan = document.getElementById('edit-ssh-test-result');
+        }
+        if (resultSpan) {
+          if (data.success) {
+            resultSpan.textContent = 'Success!';
+            resultSpan.style.color = '#090';
+          } else {
+            resultSpan.textContent = 'Failed: ' + data.error;
+            resultSpan.style.color = '#c00';
+          }
         }
       })
       .catch(e => alert('Error: ' + e.message));
@@ -948,6 +1139,11 @@ let gfwRules = [];
    }
 
    setInterval(loadStatus, 5000);
+   setInterval(function() {
+     if (document.getElementById('panel-connections').classList.contains('active')) {
+       loadConnections();
+     }
+   }, 2000);
   setInterval(function() {
     if (document.getElementById('panel-connections').classList.contains('active')) {
       loadConnections();

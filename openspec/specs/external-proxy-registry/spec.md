@@ -208,3 +208,39 @@ This matches the response format of the saved proxy test endpoint (`/api/proxies
 - **THEN** it SHALL include all required SSH fields: `kind: "ssh"`, `auth_method`, `private_key_path` (if key auth) or `password` (if password auth), `ssh_port`, `host_key_check`
 - **AND** may also include `host_key_fingerprint` if available
 - **AND** the UI shall interpret the response and display success or error to the user
+
+### ADDED Requirement: Get full proxy details by ID
+
+The system SHALL provide an endpoint `GET /api/proxies/:id` that returns the complete `ExternalProxy` configuration for the requested proxy, including all SSH-specific fields and keepalive settings.
+
+#### Scenario: Fetch full configuration of a proxy
+- **WHEN** an administrator sends `GET /api/proxies/:id` for an existing proxy
+- **THEN** the response SHALL be HTTP 200 with `Content-Type: application/json`
+- **AND** the JSON body SHALL contain the full `ExternalProxy` object with the following fields present if applicable:
+  - `id`
+  - `address`
+  - `kind` (if set, default "socks5")
+  - `username`
+  - `password`
+  - `ssh_port`
+  - `auth_method`
+  - `private_key_path`
+  - `host_key_check`
+  - `host_key_fingerprint`
+  - `keepalive` object with `enabled` and `interval`
+- **WHEN** the specified proxy ID does not exist
+- **THEN** the response SHALL be HTTP 404 Not Found
+
+#### Scenario: Edit UI fetches full proxy data before opening modal
+- **WHEN** the admin UI user clicks "Edit" on a proxy row
+- **THEN** the browser SHALL first issue `GET /api/proxies/:id` to retrieve the complete configuration
+- **AND** the browser SHALL open the edit modal for the appropriate kind (SOCKS5 or SSH)
+- **AND** the modal SHALL pre-fill all editable fields from the retrieved data
+- **AND** the proxy ID SHALL be displayed as static text (not in an editable input)
+
+#### Scenario: Backward compatibility of list endpoint
+- **WHEN** an administrator sends `GET /api/proxies` (list endpoint)
+- **THEN** the response format SHALL remain unchanged: each proxy object contains only `id`, `address`, `kind`, `has_auth`, `keepalive_enabled`, `keepalive_interval` fields
+- **AND** the list endpoint SHALL NOT include sensitive fields like `password` or `private_key_path`
+- **RATIONALE**: The list endpoint is used for the table display; it does not need full credentials and exposing them would increase attack surface.
+

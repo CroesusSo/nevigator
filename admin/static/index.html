@@ -12,26 +12,43 @@
     <div class="tab" onclick="switchTab('rules')">Rules</div>
     <div class="tab" onclick="switchTab('gfw')">GFW List</div>
      <div class="tab" onclick="switchTab('test')">Test URL</div>
-     <div class="tab" onclick="switchTab('proxies')">Proxies</div>
-     <div class="tab" onclick="switchTab('settings')">Settings</div>
+      <div class="tab" onclick="switchTab('proxies')">Proxies</div>
+      <div class="tab" onclick="switchTab('settings')">Settings</div>
   </div>
   <div class="content">
 
-    <!-- Summary Tab -->
-    <div id="panel-summary" class="panel active">
-      <div class="card">
-        <h3>Listening Addresses</h3>
-        <div class="kv"><span class="kv-key">HTTP Proxy</span><span class="kv-val" id="s-http">-</span></div>
-        <div class="kv"><span class="kv-key">SOCKS5 Proxy</span><span class="kv-val" id="s-socks5">-</span></div>
-        <div class="kv"><span class="kv-key">Admin UI</span><span class="kv-val" id="s-admin">-</span></div>
-      </div>
+     <!-- Summary Tab -->
+     <div id="panel-summary" class="panel active">
+       <div class="card">
+         <h3>Listening Addresses</h3>
+         <div class="kv"><span class="kv-key">HTTP Proxy</span><span class="kv-val" id="s-http">-</span></div>
+         <div class="kv"><span class="kv-key">SOCKS5 Proxy</span><span class="kv-val" id="s-socks5">-</span></div>
+         <div class="kv"><span class="kv-key">HTTPS Proxy</span><span class="kv-val" id="s-https">-</span></div>
+         <div class="kv"><span class="kv-key">Admin UI</span><span class="kv-val" id="s-admin">-</span></div>
+       </div>
 
-      <div class="card">
-        <h3>Connections</h3>
-        <div class="kv"><span class="kv-key">Active</span><span class="kv-val" id="s-active">-</span></div>
-        <div class="kv"><span class="kv-key">Total (since start)</span><span class="kv-val" id="s-total">-</span></div>
-      </div>
-    </div>
+       <div class="card">
+         <h3>Connections</h3>
+         <div class="kv"><span class="kv-key">Active</span><span class="kv-val" id="s-active">-</span></div>
+         <div class="kv"><span class="kv-key">Total (since start)</span><span class="kv-val" id="s-total">-</span></div>
+       </div>
+
+       <div class="card">
+         <h3>SSH Tunnels</h3>
+         <table>
+           <thead>
+             <tr>
+               <th>Proxy ID</th>
+               <th>Remote Address</th>
+               <th>State</th>
+               <th>Last Error</th>
+             </tr>
+           </thead>
+           <tbody id="tunnels-body"></tbody>
+         </table>
+         <div id="tunnels-empty" style="padding:2rem;text-align:center;color:#999;display:none;">No SSH tunnels configured</div>
+       </div>
+     </div>
 
     <!-- Connections Tab -->
     <div id="panel-connections" class="panel">
@@ -182,7 +199,7 @@
            <button class="btn btn-primary" style="margin-top:1rem; margin-right:0.5rem;" onclick="showAddSocks5Modal()">Add SOCKS5 Proxy</button>
            <button class="btn btn-primary" style="margin-top:1rem;" onclick="showAddSSHModal()">Add SSH Tunnel</button>
         </div>
-      </div>
+        </div>
 
     <!-- Add SSH Tunnel Modal -->
        <div id="add-socks5-modal" style="display:none; position:fixed; top:50%; left:50%; transform:translate(-50%,-50%); background:white; padding:2rem; border:1px solid #ccc; box-shadow:0 4px 16px rgba(0,0,0,0.2); z-index:1000; min-width:400px;">
@@ -255,11 +272,11 @@
               <option value="ignore">Ignore (insecure)</option>
             </select>
           </div>
-          <div class="form-row">
-            <label>Keepalive</label>
-            <input type="checkbox" id="new-ssh-keepalive-enabled">
-            <span style="margin-left: 1rem;">Interval: <input id="new-ssh-keepalive-interval" placeholder="30s" style="width: 100px;"></span>
-          </div>
+        <div class="form-row">
+          <label>Keepalive</label>
+          <input type="checkbox" id="edit-ssh-keepalive-enabled">
+          <span style="margin-left: 1rem;">Interval: <input id="edit-ssh-keepalive-interval" placeholder="e.g., 30s, 1m30s" style="width: 120px;"></span>
+        </div>
           <div class="form-row">
             <button class="btn btn-secondary" onclick="testNewSSHProxy()">Test</button>
             <span id="new-ssh-test-result" style="margin-left:1rem;"></span>
@@ -269,9 +286,100 @@
            <button class="btn" onclick="closeAddSSHModal()">Cancel</button>
          </div>
        </div>
-       <div id="add-ssh-overlay" style="display:none; position:fixed; top:0; left=0; width=100%; height=100%; background:rgba(0,0,0,0.5); z-index=999;" onclick="closeAddSSHModal()"></div>
+        <div id="add-ssh-overlay" style="display:none; position:fixed; top:0; left=0; width=100%; height=100%; background:rgba(0,0,0,0.5); z-index=999;" onclick="closeAddSSHModal()"></div>
 
-      <!-- Settings Tab -->
+      <!-- Edit SOCKS5 Proxy Modal -->
+      <div id="edit-socks5-modal" style="display:none; position:fixed; top:50%; left:50%; transform:translate(-50%,-50%); background:white; padding:2rem; border:1px solid #ccc; box-shadow:0 4px 16px rgba(0,0,0,0.2); z-index:1000; min-width:400px;">
+        <h3>Edit SOCKS5 Proxy</h3>
+        <div class="form-row">
+          <label>ID (read-only)</label>
+          <span id="edit-socks5-id" style="font-weight:bold;"></span>
+        </div>
+        <div class="form-row">
+          <label>Address</label>
+          <input id="edit-socks5-addr" placeholder="host:port">
+        </div>
+        <div class="form-row">
+          <label>Username</label>
+          <input id="edit-socks5-user" placeholder="optional">
+        </div>
+        <div class="form-row">
+          <label>Password</label>
+          <input type="password" id="edit-socks5-pass" placeholder="optional">
+        </div>
+        <div class="form-row">
+          <button class="btn btn-secondary" onclick="testProxyFromEdit()">Test</button>
+          <span id="edit-socks5-test-result" style="margin-left:1rem;"></span>
+        </div>
+        <div class="form-row" style="margin-top:1rem;">
+          <button class="btn btn-primary" id="save-edit-socks5-btn" onclick="saveEditSocks5Proxy()">Save</button>
+          <button class="btn" onclick="closeEditSocks5Modal()">Cancel</button>
+        </div>
+      </div>
+      <div id="edit-socks5-overlay" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.5); z-index:999;" onclick="closeEditSocks5Modal()"></div>
+
+      <!-- Edit SSH Tunnel Modal -->
+      <div id="edit-ssh-modal" style="display:none; position:fixed; top:50%; left:50%; transform:translate(-50%,-50%); background:white; padding:2rem; border:1px solid #ccc; box-shadow:0 4px 16px rgba(0,0,0,0.2); z-index:1000; min-width:400px;">
+        <h3>Edit SSH Tunnel</h3>
+        <div class="form-row">
+          <label>ID (read-only)</label>
+          <span id="edit-ssh-id" style="font-weight:bold;"></span>
+        </div>
+        <div class="form-row">
+          <label>Address</label>
+          <input id="edit-ssh-addr" placeholder="host or user@host">
+        </div>
+        <div class="form-row">
+          <label>SSH Port</label>
+          <input id="edit-ssh-port" type="number" placeholder="22">
+        </div>
+        <div class="form-row">
+          <label>Username</label>
+          <input id="edit-ssh-user" placeholder="optional (or in address)">
+        </div>
+          <div class="form-row">
+            <label>Auth Method</label>
+            <select id="edit-ssh-auth-method" onchange="toggleEditSSHAuthFields()">
+              <option value="password">Password</option>
+              <option value="key">Private Key</option>
+            </select>
+          </div>
+        <div class="form-row" id="edit-ssh-password-field">
+          <label>Password</label>
+          <input type="password" id="edit-ssh-pass" placeholder="for password auth">
+        </div>
+        <div class="form-row" id="edit-ssh-key-path-field">
+          <label>Private Key Path</label>
+          <input id="edit-ssh-private-key-path" placeholder="/path/to/key.pem">
+        </div>
+        <div class="form-row">
+          <label>Host Key Check</label>
+          <select id="edit-ssh-host-key-check">
+            <option value="strict">Strict (known_hosts)</option>
+            <option value="ignore">Ignore (insecure)</option>
+          </select>
+        </div>
+        <div class="form-row">
+          <label>Host Key Fingerprint</label>
+          <input id="edit-ssh-host-key-fingerprint" placeholder="optional hex fingerprint">
+        </div>
+        <div class="form-row">
+          <label>Keepalive</label>
+          <input type="checkbox" id="edit-ssh-keepalive-enabled" onchange="toggleEditSSHKeepalive()">
+          <span style="margin-left: 1rem;">Interval: <input id="edit-ssh-keepalive-interval" placeholder="30s" style="width: 100px;"></span>
+        </div>
+        <div class="form-row">
+          <button class="btn btn-secondary" onclick="testProxyFromEdit()">Test</button>
+          <span id="edit-ssh-test-result" style="margin-left:1rem;"></span>
+        </div>
+        <div class="form-row" style="margin-top:1rem;">
+          <button class="btn btn-primary" id="save-edit-ssh-btn" onclick="saveEditSSHProxy()">Save</button>
+          <button class="btn" onclick="closeEditSSHModal()">Cancel</button>
+        </div>
+      </div>
+      <div id="edit-ssh-overlay" style="display:none; position:fixed; top:0; left=0; width=100%; height=100%; background:rgba(0,0,0,0.5); z-index=999;" onclick="closeEditSSHModal()"></div>
+
+    <!-- Settings Tab -->
       <div id="panel-settings" class="panel">
         <div class="card">
           <h3>Proxy Listeners</h3>

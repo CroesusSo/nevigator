@@ -1054,7 +1054,7 @@ func (h *Handler) handleCreateProxy(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// handleProxyByID handles /api/proxies/:id (PUT, DELETE) and /api/proxies/:id/test (POST test).
+// handleProxyByID handles /api/proxies/:id (GET, PUT, DELETE) and /api/proxies/:id/test (POST test).
 func (h *Handler) handleProxyByID(w http.ResponseWriter, r *http.Request) {
 	path := strings.TrimPrefix(r.URL.Path, "/api/proxies/")
 	parts := strings.Split(path, "/")
@@ -1068,6 +1068,8 @@ func (h *Handler) handleProxyByID(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	switch r.Method {
+	case http.MethodGet:
+		h.handleGetProxyByID(w, r, id)
 	case http.MethodPut:
 		h.handleUpdateProxy(w, r, id)
 	case http.MethodDelete:
@@ -1370,6 +1372,44 @@ func (h *Handler) handleDeleteProxy(w http.ResponseWriter, r *http.Request, id s
 	}
 	h.router.SetProxyRegistry(cfg.Proxy.ExternalProxies)
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleGetProxyByID returns the full configuration of a proxy by ID.
+func (h *Handler) handleGetProxyByID(w http.ResponseWriter, r *http.Request, id string) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	// Read config
+	data, err := os.ReadFile(h.configPath)
+	if err != nil {
+		log.Printf("[Admin] Failed to read config for get proxy: %v", err)
+		http.Error(w, "Cannot read config", http.StatusInternalServerError)
+		return
+	}
+	var cfg FullConfig
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
+		log.Printf("[Admin] Failed to parse config for get proxy: %v", err)
+		http.Error(w, "Cannot parse config", http.StatusInternalServerError)
+		return
+	}
+	// Find proxy
+	var proxy pac.ExternalProxy
+	found := false
+	for _, p := range cfg.Proxy.ExternalProxies {
+		if p.ID == id {
+			proxy = p
+			found = true
+			break
+		}
+	}
+	if !found {
+		http.Error(w, "Proxy not found", http.StatusNotFound)
+		return
+	}
+	// Return full proxy object
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(proxy)
 }
 
 // handleConfig dispatches GET and PUT on /api/config.
