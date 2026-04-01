@@ -97,6 +97,21 @@ proxy:
 
 All existing scenarios for SOCKS5 proxies remain unchanged. The addition of `kind` and SSH fields does not break existing configurations when omitted.
 
+### Requirement: Keepalive interval format and defaulting
+
+The keepalive interval field in API responses SHALL be a duration string (e.g., "30s"). When creating or updating an SSH proxy with keepalive enabled but no interval provided, the system SHALL default the interval to 30 seconds.
+
+#### Scenario: GET /api/proxies/:id returns keepalive interval as string
+- **WHEN** an administrator requests `GET /api/proxies/:id` for an SSH proxy with keepalive enabled and interval 30 seconds
+- **THEN** the response JSON SHALL contain `"keepalive": { "enabled": true, "interval": "30s" }`
+- **AND** the `interval` field SHALL NOT be an integer like `30000000000`
+
+#### Scenario: Create SSH proxy with keepalive enabled but no interval
+- **WHEN** an administrator POSTs `/api/proxies` with JSON body containing `"kind": "ssh"`, `"keepalive_enabled": true`, and no `keepalive_interval`
+- **THEN** the created proxy SHALL have `keepalive.interval = "30s"`
+- **AND** the response SHALL include `"keepalive_interval": "30s"`
+- **AND** subsequent `GET /api/proxies/:id` SHALL return `"keepalive": { "enabled": true, "interval": "30s" }`
+
 ### Additional Requirement: SSH Tunnel Status
 
 The system SHALL expose SSH tunnel status via the `/api/status` endpoint. The status JSON SHALL include an `ssh_tunnels` object mapping proxy IDs to their current state.

@@ -261,7 +261,7 @@ func (t *Tunnel) keepaliveLoop(ctx context.Context, client *ssh.Client) {
 
 			// Launch goroutine to send keepalive (this may block)
 			go func() {
-				_, _, err := client.SendRequest("keepalive@openssh.com", true, nil)
+				_, _, err := client.SendRequest("keepalive@golang.org", true, nil)
 				errCh <- err
 			}()
 

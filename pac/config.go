@@ -102,6 +102,24 @@ func (k *KeepaliveConfig) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+// MarshalJSON implements JSON marshaling for KeepaliveConfig with string interval.
+func (k KeepaliveConfig) MarshalJSON() ([]byte, error) {
+	type Alias KeepaliveConfig
+	aux := &struct {
+		Interval string `json:"interval,omitempty"`
+		*Alias
+	}{
+		Interval: func() string {
+			if k.Interval > 0 {
+				return k.Interval.String()
+			}
+			return ""
+		}(),
+		Alias: (*Alias)(&k),
+	}
+	return json.Marshal(aux)
+}
+
 // ExternalProxy represents an upstream proxy (SOCKS5 or SSH) with optional authentication.
 type ExternalProxy struct {
 	ID       string `yaml:"id" json:"id"`
