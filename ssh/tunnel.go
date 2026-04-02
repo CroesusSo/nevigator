@@ -49,10 +49,9 @@ func getDialSSH() func(pac.ExternalProxy) (*ssh.Client, error) {
 }
 
 const (
-	stateClosed       = "closed"
-	stateConnecting   = "connecting"
-	stateConnected    = "connected"
-	stateReconnecting = "reconnecting"
+	stateClosed     = "closed"
+	stateConnecting = "connecting"
+	stateConnected  = "connected"
 )
 
 // dialTask represents a request to dial through the tunnel.
@@ -142,10 +141,9 @@ func (t *Tunnel) manager() {
 	for {
 		select {
 		case <-t.failCh:
-			// Only reconnect if we believe we're connected (avoid reconnect storms)
-			if t.isConnected() {
-				t.connect()
-			}
+			// Any failure signals the need to (re)connect.
+			// The connect() method is idempotent and will establish connection if not already connecting.
+			t.connect()
 		case <-t.ctx.Done():
 			return
 		}
@@ -159,12 +157,12 @@ func (t *Tunnel) isConnected() bool {
 	return s == stateConnected && client != nil
 }
 
-// connect attempts to establish the SSH connection, with exponential backoff.
+// connect attempts to establish or re-establish the SSH connection, with exponential backoff on failures.
 // It runs in the manager goroutine only.
 func (t *Tunnel) connect() {
-	// If already connecting or connected, no need to connect again
+	// If an attempt is already in progress, skip. We may be called from "connected" state to trigger reconnection.
 	current := t.state.Load().(string)
-	if current == stateConnecting || current == stateConnected {
+	if current == stateConnecting {
 		return
 	}
 
@@ -281,7 +279,15 @@ func (t *Tunnel) keepaliveLoop(ctx context.Context, client *ssh.Client) {
 				failures := atomic.LoadInt32(&t.keepaliveFailures)
 				if failures >= maxFailures {
 					log.Printf("[SSH] Tunnel %s keepalive failed %d times; closing connection", t.proxyID, failures)
-					client.Close() // Trigger reconnection via failCh
+					// Mark tunnel as broken: swap client to nil, close old, signal manager
+					old := t.client.Swap(nil)
+					if old != nil {
+						old.Close()
+					}
+					select {
+					case t.failCh <- struct{}{}:
+					default:
+					}
 					return
 				}
 			} else {
@@ -362,7 +368,12 @@ func (t *Tunnel) worker() {
 			// Perform the dial
 			conn, err := client.Dial("tcp", task.dest)
 			if err != nil {
-				// Signal manager that connection is bad (non-blocking)
+				// Mark tunnel as broken: swap client to nil and close old
+				old := t.client.Swap(nil)
+				if old != nil {
+					old.Close()
+				}
+				// Signal manager to reconnect (non-blocking)
 				select {
 				case t.failCh <- struct{}{}:
 				default:
