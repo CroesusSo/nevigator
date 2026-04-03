@@ -82,7 +82,7 @@ func (m *Manager) getOrCreateTunnel(id string) *Tunnel {
 			cancel:  cancel,
 			closing: atomic.Bool{},
 		}
-		t.state.Store(stateClosed)
+		t.setState(stateClosed)
 		t.closing.Store(true)
 		return t
 	}
@@ -117,7 +117,7 @@ func (m *Manager) GetTunnelsStatus() map[string]status.SSHTunnelStatus {
 	result := make(map[string]status.SSHTunnelStatus, len(m.tunnels))
 	for id, tunnel := range m.tunnels {
 		// Read atomic state
-		state := tunnel.state.Load().(string)
+		state := tunnel.getStateStr()
 		client := tunnel.client.Load()
 		remoteAddr := ""
 		if client != nil {

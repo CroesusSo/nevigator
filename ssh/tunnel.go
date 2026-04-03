@@ -48,10 +48,13 @@ func getDialSSH() func(pac.ExternalProxy) (*ssh.Client, error) {
 	return dialSSHVal.Load().(func(pac.ExternalProxy) (*ssh.Client, error))
 }
 
+type ConnStat int32
+
 const (
-	stateClosed     = "closed"
-	stateConnecting = "connecting"
-	stateConnected  = "connected"
+	stateIdle ConnStat = iota
+	stateConnecting
+	stateConnected
+	stateClosed
 )
 
 // dialTask represents a request to dial through the tunnel.
@@ -74,7 +77,7 @@ type Tunnel struct {
 
 	// Atomic state (accessed via atomics)
 	client  atomic.Pointer[ssh.Client]
-	state   atomic.Value // string
+	state   atomic.Int32
 	closing atomic.Bool
 
 	// Channels
@@ -114,7 +117,7 @@ func NewTunnel(cfg pac.ExternalProxy) *Tunnel {
 		cancel:  cancel,
 		cond:    sync.NewCond(&sync.Mutex{}),
 	}
-	t.state.Store(stateClosed)
+	t.state.Store(int32(stateIdle))
 
 	// Start workers
 	for i := 0; i < defaultWorkers; i++ {
@@ -143,7 +146,13 @@ func (t *Tunnel) manager() {
 		case <-t.failCh:
 			// Any failure signals the need to (re)connect.
 			// The connect() method is idempotent and will establish connection if not already connecting.
-			t.connect()
+			if t.closing.Load() {
+				t.setState(stateClosed)
+				return
+			} else {
+				t.state.Store(int32(stateIdle))
+				t.connect()
+			}
 		case <-t.ctx.Done():
 			return
 		}
@@ -152,28 +161,23 @@ func (t *Tunnel) manager() {
 
 // isConnected is a fast lock-free check of connection state.
 func (t *Tunnel) isConnected() bool {
-	s := t.state.Load().(string)
+	s := t.state.Load()
 	client := t.client.Load()
-	return s == stateConnected && client != nil
+	return s == int32(stateConnected) && client != nil
 }
 
 // connect attempts to establish or re-establish the SSH connection, with exponential backoff on failures.
 // It runs in the manager goroutine only.
 func (t *Tunnel) connect() {
 	// If an attempt is already in progress, skip. We may be called from "connected" state to trigger reconnection.
-	current := t.state.Load().(string)
-	if current == stateConnecting {
+	// we use CAS to ensure it's atomic
+	if !t.state.CompareAndSwap(int32(stateIdle), int32(stateConnecting)) {
 		return
 	}
 
 	for {
 		// Check for shutdown or permanent closure
-		if t.closing.Load() {
-			t.setState(stateClosed)
-			return
-		}
 
-		t.setState(stateConnecting)
 		log.Printf("[SSH] Tunnel %s connecting to %s", t.proxyID, t.cfg.Address)
 
 		client, err := getDialSSH()(t.cfg)
@@ -233,8 +237,18 @@ func (t *Tunnel) setClient(newClient *ssh.Client) {
 }
 
 // setState updates the atomic state string.
-func (t *Tunnel) setState(s string) {
-	t.state.Store(s)
+func (t *Tunnel) setState(s ConnStat) {
+	t.state.Store(int32(s))
+}
+
+func (t *Tunnel) getStateStr() string {
+	s := t.state.Load()
+	return [...]string{
+		"Idle",
+		"Connecting",
+		"Connected",
+		"Closed",
+	}[s]
 }
 
 // keepaliveLoop runs in its own goroutine and sends periodic keepalive probes.
