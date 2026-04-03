@@ -150,8 +150,14 @@ func (t *Tunnel) manager() {
 				t.setState(stateClosed)
 				return
 			} else {
-				t.state.Store(int32(stateIdle))
-				t.connect()
+				// check if it's connecting
+				s := t.state.Load()
+				if s != int32(stateConnecting) && s != int32(stateIdle) {
+					// change state to idle
+					if t.state.CompareAndSwap(s, int32(stateIdle)) {
+						t.connect()
+					}
+				}
 			}
 		case <-t.ctx.Done():
 			return
