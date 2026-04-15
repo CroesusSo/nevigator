@@ -745,7 +745,8 @@ func (h *Handler) handleGetGFWConfig(w http.ResponseWriter, r *http.Request) {
 	// Load full config to get Disabled and other persisted values
 	cfg, err := h.readConfig()
 	if err != nil {
-		cfg = &FullConfig{} // use empty config
+		log.Printf("[Admin] Failed to read config for GFW config, using defaults: %v", err)
+		cfg = &FullConfig{}
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -887,7 +888,7 @@ func (h *Handler) findProxyByID(id string) (*pac.ExternalProxy, int, error) {
 			return &cfg.Proxy.ExternalProxies[i], i, nil
 		}
 	}
-	return nil, -1, nil
+	return nil, -1, fmt.Errorf("proxy not found: %s", id)
 }
 
 // handleProxies dispatches GET (list) and POST (create) on /api/proxies.

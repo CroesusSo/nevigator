@@ -24,7 +24,10 @@ func TestManagerUpdateProxies(t *testing.T) {
 	}
 
 	// Get tunnel for p1 should create it
-	tunnel1 := m.getOrCreateTunnel("p1")
+	tunnel1, err := m.getOrCreateTunnel("p1")
+	if err != nil {
+		t.Fatalf("getOrCreateTunnel failed: %v", err)
+	}
 	if tunnel1 == nil {
 		t.Fatal("expected tunnel for p1")
 	}

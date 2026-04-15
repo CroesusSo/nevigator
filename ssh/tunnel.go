@@ -14,6 +14,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"log"
+	"math/rand"
 	"net"
 	"os"
 	"path/filepath"
@@ -38,6 +39,14 @@ var (
 	dialSSHVal atomic.Value // type: func(pac.ExternalProxy) (*ssh.Client, error)
 )
 
+// stateStr maps ConnStat values to human-readable strings.
+var stateStr = [...]string{
+	"Idle",
+	"Connecting",
+	"Connected",
+	"Closed",
+}
+
 func init() {
 	// Initialize with the real dialSSH function
 	dialSSHVal.Store(dialSSH)
@@ -59,6 +68,8 @@ const (
 
 // dialTask represents a request to dial through the tunnel.
 type dialTask struct {
+	ctx      context.Context
+	cancel   context.CancelFunc
 	dest     string
 	respChan chan<- dialResult
 }
@@ -80,6 +91,9 @@ type Tunnel struct {
 	state   atomic.Int32
 	closing atomic.Bool
 
+	// Mutex for client access (protects client pointer and RemoteAddr)
+	clientMu sync.Mutex
+
 	// Channels
 	dialCh chan dialTask // buffered task queue
 	failCh chan struct{} // signals from workers that connection failed
@@ -94,6 +108,8 @@ type Tunnel struct {
 	backoff time.Duration // manager-only (protected by single-manager goroutine)
 
 	// Keepalive management
+	keepaliveWg       sync.WaitGroup // guards keepalive goroutine lifecycle
+	keepaliveMu       sync.Mutex     // protects keepaliveCtx and keepaliveCancel
 	keepaliveCtx      context.Context
 	keepaliveCancel   context.CancelFunc
 	keepaliveFailures int32 // atomic access
@@ -104,7 +120,7 @@ func NewTunnel(cfg pac.ExternalProxy) *Tunnel {
 	const (
 		defaultWorkers = 20
 		dialBufSize    = 200
-		failBufSize    = 10
+		failBufSize    = 20
 	)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -191,6 +207,7 @@ func (t *Tunnel) connect() {
 			if isPermanentError(err) {
 				t.closing.Store(true)
 				t.setState(stateClosed)
+				t.cancel() // Signal all workers to exit
 				log.Printf("[SSH] Tunnel %s permanent failure: %v", t.proxyID, err)
 				return
 			}
@@ -248,13 +265,21 @@ func (t *Tunnel) setState(s ConnStat) {
 }
 
 func (t *Tunnel) getStateStr() string {
-	s := t.state.Load()
-	return [...]string{
-		"Idle",
-		"Connecting",
-		"Connected",
-		"Closed",
-	}[s]
+	return stateStr[t.state.Load()]
+}
+
+// snapshot returns a consistent snapshot of tunnel state for monitoring.
+// It locks clientMu to ensure RemoteAddr() is safe to call.
+func (t *Tunnel) snapshot() (state string, remoteAddr string) {
+	t.clientMu.Lock()
+	defer t.clientMu.Unlock()
+	state = t.getStateStr()
+	if client := t.client.Load(); client != nil {
+		remoteAddr = client.RemoteAddr().String()
+	} else {
+		remoteAddr = t.cfg.Address
+	}
+	return state, remoteAddr
 }
 
 // keepaliveLoop runs in its own goroutine and sends periodic keepalive probes.
@@ -266,8 +291,16 @@ func (t *Tunnel) keepaliveLoop(ctx context.Context, client *ssh.Client) {
 	pingTimeout := 5 * time.Second
 	// Max consecutive failures before reconnect
 	const maxFailures = 3
+	// Reusable errCh to avoid per-ping allocation
+	errCh := make(chan error, 1)
 
 	for {
+		// Drain any pending errCh from previous iteration to avoid deadlock
+		select {
+		case <-errCh:
+		default:
+		}
+
 		select {
 		case <-ctx.Done():
 			// Stop requested
@@ -275,7 +308,6 @@ func (t *Tunnel) keepaliveLoop(ctx context.Context, client *ssh.Client) {
 		case <-ticker.C:
 			// Create child context for this ping with timeout
 			pingCtx, cancel := context.WithTimeout(ctx, pingTimeout)
-			errCh := make(chan error, 1)
 
 			// Launch goroutine to send keepalive (this may block)
 			go func() {
@@ -304,9 +336,19 @@ func (t *Tunnel) keepaliveLoop(ctx context.Context, client *ssh.Client) {
 					if old != nil {
 						old.Close()
 					}
-					select {
-					case t.failCh <- struct{}{}:
-					default:
+					// Retry send to failCh with loop to handle contention
+					for sent := false; !sent; {
+						select {
+						case t.failCh <- struct{}{}:
+							sent = true
+						default:
+							// Buffer full, drop oldest signal and retry
+							select {
+							case <-t.failCh:
+							case t.failCh <- struct{}{}:
+								sent = true
+							}
+						}
 					}
 					return
 				}
@@ -321,22 +363,27 @@ func (t *Tunnel) keepaliveLoop(ctx context.Context, client *ssh.Client) {
 // startKeepalive begins the keepalive goroutine for the current client.
 func (t *Tunnel) startKeepalive(client *ssh.Client) {
 	if t.cfg.Keepalive.Enabled && t.cfg.Keepalive.Interval > 0 {
+		t.keepaliveMu.Lock()
 		t.keepaliveCtx, t.keepaliveCancel = context.WithCancel(t.ctx)
-		t.wg.Add(1)
+		t.keepaliveMu.Unlock()
+		t.keepaliveWg.Add(1)
 		go func() {
-			defer t.wg.Done()
+			defer t.keepaliveWg.Done()
 			t.keepaliveLoop(t.keepaliveCtx, client)
 		}()
 		log.Printf("[SSH] Tunnel %s keepalive started (interval: %v)", t.proxyID, t.cfg.Keepalive.Interval)
 	}
 }
 
-// stopKeepalive stops the keepalive goroutine if running.
+// stopKeepalive stops the keepalive goroutine if running and waits for it to exit.
 func (t *Tunnel) stopKeepalive() {
+	t.keepaliveMu.Lock()
 	if t.keepaliveCancel != nil {
 		t.keepaliveCancel()
 		t.keepaliveCancel = nil
 	}
+	t.keepaliveMu.Unlock()
+	t.keepaliveWg.Wait()
 }
 
 // computeBackoff returns exponential backoff with jitter and updates t.backoff.
@@ -350,8 +397,9 @@ func (t *Tunnel) computeBackoff() time.Duration {
 	if backoff > 5*time.Minute {
 		backoff = 5 * time.Minute
 	}
-	// Jitter ±20%
-	jitter := time.Duration(float64(backoff) * (0.8 + 0.4*float64(time.Now().UnixNano()%1000)/1000.0))
+	// Jitter ±20% using rand for better distribution
+	jitterFactor := 0.8 + (rand.Float64() * 0.4) // [0.8, 1.2)
+	jitter := time.Duration(float64(backoff) * jitterFactor)
 	t.backoff = jitter
 	return jitter
 }
@@ -393,17 +441,42 @@ func (t *Tunnel) worker() {
 				if old != nil {
 					old.Close()
 				}
-				// Signal manager to reconnect (non-blocking)
-				select {
-				case t.failCh <- struct{}{}:
-				default:
+				// Signal manager to reconnect (non-blocking with retry loop and timeout)
+				for sent := false; !sent; {
+					select {
+					case t.failCh <- struct{}{}:
+						sent = true
+					case <-time.After(100 * time.Millisecond):
+						// Timeout: drop signal if can't send within reasonable time
+						sent = true
+					default:
+						// Buffer full, drop oldest signal and retry
+						select {
+						case <-t.failCh:
+						case t.failCh <- struct{}{}:
+							sent = true
+						case <-time.After(100 * time.Millisecond):
+							sent = true
+						}
+					}
 				}
-				task.respChan <- dialResult{err: err}
+				// Check if caller already timed out/cancelled
+				select {
+				case task.respChan <- dialResult{err: err}:
+				case <-task.ctx.Done():
+					// Caller timed out, skip result
+				}
 				continue
 			}
 
 			// Success
-			task.respChan <- dialResult{conn: conn, err: nil}
+			// Check if caller already timed out/cancelled
+			select {
+			case task.respChan <- dialResult{conn: conn, err: nil}:
+			case <-task.ctx.Done():
+				// Caller timed out, close connection and skip result
+				conn.Close()
+			}
 		case <-t.ctx.Done():
 			return
 		}
@@ -414,9 +487,15 @@ func (t *Tunnel) worker() {
 // It blocks until the connection is established or an error occurs, respecting timeout.
 // If the internal task queue is full, it returns ErrOverload immediately.
 func (t *Tunnel) Dial(dest string, timeout time.Duration) (net.Conn, error) {
-	// Build task
+	// Create timeout context for this dial operation
+	dialCtx, dialCancel := context.WithTimeout(t.ctx, timeout)
+	defer dialCancel()
+
+	// Build task with cancellation support
 	respChan := make(chan dialResult, 1)
 	task := dialTask{
+		ctx:      dialCtx,
+		cancel:   dialCancel,
 		dest:     dest,
 		respChan: respChan,
 	}
@@ -435,17 +514,11 @@ func (t *Tunnel) Dial(dest string, timeout time.Duration) (net.Conn, error) {
 	}
 
 	// Wait for result or timeout
-	deadline := time.Now().Add(timeout)
-	for {
-		select {
-		case result := <-respChan:
-			if result.err != nil {
-				return nil, result.err
-			}
-			return result.conn, nil
-		case <-time.After(time.Until(deadline)):
-			return nil, fmt.Errorf("dial timeout")
-		}
+	select {
+	case result := <-respChan:
+		return result.conn, result.err
+	case <-dialCtx.Done():
+		return nil, fmt.Errorf("dial timeout: %w", context.DeadlineExceeded)
 	}
 }
 
@@ -482,20 +555,30 @@ func (t *Tunnel) Close() error {
 }
 
 // isPermanentError returns true for errors that should stop retrying.
+// It uses errors.Is where possible and falls back to string matching for
+// SSH-specific errors that don't expose sentinels.
 func isPermanentError(err error) bool {
 	if err == nil {
 		return false
 	}
-	// Check error message for permanent failures
-	s := err.Error()
-	if strings.Contains(s, "password denied") ||
-		strings.Contains(s, "public key denied") ||
-		strings.Contains(s, "host key verification failed") ||
-		strings.Contains(s, "permission denied") ||
-		strings.Contains(s, "no such file or directory") ||
-		strings.Contains(s, "invalid private key") {
+
+	// Check for file-based errors using os errors
+	if os.IsNotExist(err) || os.IsPermission(err) {
 		return true
 	}
+
+	// Check for SSH-specific errors via error message
+	// The ssh package doesn't expose sentinels for these common auth failures
+	errMsg := err.Error()
+	if strings.Contains(errMsg, "password denied") ||
+		strings.Contains(errMsg, "public key denied") ||
+		strings.Contains(errMsg, "host key verification failed") ||
+		strings.Contains(errMsg, "permission denied") ||
+		strings.Contains(errMsg, "invalid private key") ||
+		strings.Contains(errMsg, "no such file or directory") {
+		return true
+	}
+
 	return false
 }
 
@@ -625,9 +708,9 @@ func makeHostKeyCallback(cfg pac.ExternalProxy) ssh.HostKeyCallback {
 		knownhostsPath := defaultKnownHostsPath()
 		cb, err := knownhosts.New(knownhostsPath)
 		if err != nil {
-			log.Printf("[SSH] known_hosts at %s: %v; defaulting to no verification", knownhostsPath, err)
+			log.Printf("[SSH] known_hosts at %s: %v; rejecting unknown hosts", knownhostsPath, err)
 			return func(hostname string, remote net.Addr, key ssh.PublicKey) error {
-				return nil
+				return fmt.Errorf("known_hosts unavailable: %w", err)
 			}
 		}
 		return cb
