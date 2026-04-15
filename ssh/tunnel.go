@@ -102,8 +102,8 @@ type Tunnel struct {
 // NewTunnel creates a new Tunnel with the given configuration.
 func NewTunnel(cfg pac.ExternalProxy) *Tunnel {
 	const (
-		defaultWorkers = 8
-		dialBufSize    = 100
+		defaultWorkers = 20
+		dialBufSize    = 200
 		failBufSize    = 10
 	)
 
