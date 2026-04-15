@@ -675,12 +675,8 @@ func (h *Handler) handleGFWStatus(w http.ResponseWriter, r *http.Request) {
 	// Determine enabled flag from config
 	enabled := true // default (disabled false)
 	if h.configPath != "" {
-		data, err := os.ReadFile(h.configPath)
-		if err == nil {
-			var cfg FullConfig
-			if err := yaml.Unmarshal(data, &cfg); err == nil {
-				enabled = !cfg.GFW.Disabled
-			}
+		if cfg, err := h.readConfig(); err == nil {
+			enabled = !cfg.GFW.Disabled
 		}
 	}
 	resp["enabled"] = enabled
@@ -747,10 +743,9 @@ func (h *Handler) handleGetGFWConfig(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Load full config to get Disabled and other persisted values
-	data, err := os.ReadFile(h.configPath)
-	var cfg FullConfig
-	if err == nil {
-		yaml.Unmarshal(data, &cfg)
+	cfg, err := h.readConfig()
+	if err != nil {
+		cfg = &FullConfig{} // use empty config
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -773,15 +768,10 @@ func (h *Handler) handlePutGFWConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Load current config to get current disabled state
-	data, err := os.ReadFile(h.configPath)
+	// Load current config
+	cfg, err := h.readConfig()
 	if err != nil {
 		http.Error(w, "Failed to read config", http.StatusInternalServerError)
-		return
-	}
-	var cfg FullConfig
-	if err := yaml.Unmarshal(data, &cfg); err != nil {
-		http.Error(w, "Failed to parse config", http.StatusInternalServerError)
 		return
 	}
 
@@ -825,19 +815,8 @@ func (h *Handler) handlePutGFWConfig(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Persist updated config
-	out, err := yaml.Marshal(&cfg)
-	if err != nil {
-		http.Error(w, "Failed to marshal config", http.StatusInternalServerError)
-		return
-	}
-	tmpPath := h.configPath + ".tmp"
-	if err := os.WriteFile(tmpPath, out, 0o644); err != nil {
-		http.Error(w, "Failed to write config tmp", http.StatusInternalServerError)
-		return
-	}
-	if err := os.Rename(tmpPath, h.configPath); err != nil {
-		os.Remove(tmpPath)
-		http.Error(w, "Failed to rename config", http.StatusInternalServerError)
+	if err := h.writeFullConfig(*cfg); err != nil {
+		http.Error(w, "Failed to save config", http.StatusInternalServerError)
 		return
 	}
 
@@ -857,18 +836,27 @@ func (h *Handler) regeneratePAC() {
 	enableURLGlob := false
 	enabled := true // default
 	if h.configPath != "" {
-		data, err := os.ReadFile(h.configPath)
-		if err == nil {
-			var cfg FullConfig
-			if err := yaml.Unmarshal(data, &cfg); err == nil {
-				enableURLGlob = cfg.PAC.EnableURLGlob
-				enabled = !cfg.GFW.Disabled
-			}
+		if cfg, err := h.readConfig(); err == nil {
+			enableURLGlob = cfg.PAC.EnableURLGlob
+			enabled = !cfg.GFW.Disabled
 		}
 	}
 	if err := gfw.RegeneratePAC(h.userPath, h.gfwPath, h.pacPath, h.defaultExternalProxy, enableURLGlob, enabled); err != nil {
 		log.Printf("[Admin] PAC regeneration failed: %v", err)
 	}
+}
+
+// readConfig reads and unmarshals the config file.
+func (h *Handler) readConfig() (*FullConfig, error) {
+	data, err := os.ReadFile(h.configPath)
+	if err != nil {
+		return nil, fmt.Errorf("read config: %w", err)
+	}
+	var cfg FullConfig
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
+		return nil, fmt.Errorf("parse config: %w", err)
+	}
+	return &cfg, nil
 }
 
 // writeFullConfig writes the FullConfig to h.configPath atomically.
@@ -888,6 +876,20 @@ func (h *Handler) writeFullConfig(cfg FullConfig) error {
 	return nil
 }
 
+// findProxyByID returns the proxy with the given ID and its index.
+func (h *Handler) findProxyByID(id string) (*pac.ExternalProxy, int, error) {
+	cfg, err := h.readConfig()
+	if err != nil {
+		return nil, -1, err
+	}
+	for i, p := range cfg.Proxy.ExternalProxies {
+		if p.ID == id {
+			return &cfg.Proxy.ExternalProxies[i], i, nil
+		}
+	}
+	return nil, -1, nil
+}
+
 // handleProxies dispatches GET (list) and POST (create) on /api/proxies.
 func (h *Handler) handleProxies(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
@@ -902,16 +904,11 @@ func (h *Handler) handleProxies(w http.ResponseWriter, r *http.Request) {
 
 // handleListProxies returns the list of external proxies without passwords.
 func (h *Handler) handleListProxies(w http.ResponseWriter, r *http.Request) {
-	data, err := os.ReadFile(h.configPath)
+	// Read config
+	cfg, err := h.readConfig()
 	if err != nil {
 		log.Printf("[Admin] Failed to read config for listing proxies: %v", err)
 		http.Error(w, "Cannot read config", http.StatusInternalServerError)
-		return
-	}
-	var cfg FullConfig
-	if err := yaml.Unmarshal(data, &cfg); err != nil {
-		log.Printf("[Admin] Failed to parse config for listing proxies: %v", err)
-		http.Error(w, "Cannot parse config", http.StatusInternalServerError)
 		return
 	}
 	proxies := make([]map[string]interface{}, len(cfg.Proxy.ExternalProxies))
@@ -1006,16 +1003,10 @@ func (h *Handler) handleCreateProxy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Read config
-	data, err := os.ReadFile(h.configPath)
+	cfg, err := h.readConfig()
 	if err != nil {
 		log.Printf("[Admin] Failed to read config for create proxy: %v", err)
 		http.Error(w, "Cannot read config", http.StatusInternalServerError)
-		return
-	}
-	var cfg FullConfig
-	if err := yaml.Unmarshal(data, &cfg); err != nil {
-		log.Printf("[Admin] Failed to parse config for create proxy: %v", err)
-		http.Error(w, "Cannot parse config", http.StatusInternalServerError)
 		return
 	}
 	// Duplicate ID check
@@ -1031,7 +1022,7 @@ func (h *Handler) handleCreateProxy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	cfg.Proxy.ExternalProxies = append(cfg.Proxy.ExternalProxies, newProxy)
-	if err := h.writeFullConfig(cfg); err != nil {
+	if err := h.writeFullConfig(*cfg); err != nil {
 		log.Printf("[Admin] Failed to write config after create proxy: %v", err)
 		http.Error(w, "Failed to save config", http.StatusInternalServerError)
 		return
@@ -1082,14 +1073,9 @@ func (h *Handler) handleProxyByID(w http.ResponseWriter, r *http.Request) {
 // handleTestProxyByID tests connectivity to a saved proxy.
 func (h *Handler) handleTestProxyByID(w http.ResponseWriter, r *http.Request, id string) {
 	// Read config
-	data, readErr := os.ReadFile(h.configPath)
-	if readErr != nil {
+	cfg, err := h.readConfig()
+	if err != nil {
 		http.Error(w, "Cannot read config", http.StatusInternalServerError)
-		return
-	}
-	var cfg FullConfig
-	if unmarshalErr := yaml.Unmarshal(data, &cfg); unmarshalErr != nil {
-		http.Error(w, "Cannot parse config", http.StatusInternalServerError)
 		return
 	}
 	// Find proxy
@@ -1233,16 +1219,10 @@ func (h *Handler) handleTestProxy(w http.ResponseWriter, r *http.Request) {
 // handleUpdateProxy updates an existing external proxy (partial update).
 func (h *Handler) handleUpdateProxy(w http.ResponseWriter, r *http.Request, id string) {
 	// Read config
-	data, err := os.ReadFile(h.configPath)
+	cfg, err := h.readConfig()
 	if err != nil {
 		log.Printf("[Admin] Failed to read config for update proxy: %v", err)
 		http.Error(w, "Cannot read config", http.StatusInternalServerError)
-		return
-	}
-	var cfg FullConfig
-	if err := yaml.Unmarshal(data, &cfg); err != nil {
-		log.Printf("[Admin] Failed to parse config for update proxy: %v", err)
-		http.Error(w, "Cannot parse config", http.StatusInternalServerError)
 		return
 	}
 	// Find proxy
@@ -1327,7 +1307,7 @@ func (h *Handler) handleUpdateProxy(w http.ResponseWriter, r *http.Request, id s
 		return
 	}
 	cfg.Proxy.ExternalProxies[idx] = proxy
-	if err := h.writeFullConfig(cfg); err != nil {
+	if err := h.writeFullConfig(*cfg); err != nil {
 		log.Printf("[Admin] Failed to write config after update proxy: %v", err)
 		http.Error(w, "Failed to save config", http.StatusInternalServerError)
 		return
@@ -1339,16 +1319,10 @@ func (h *Handler) handleUpdateProxy(w http.ResponseWriter, r *http.Request, id s
 
 // handleDeleteProxy removes an external proxy by ID.
 func (h *Handler) handleDeleteProxy(w http.ResponseWriter, r *http.Request, id string) {
-	data, err := os.ReadFile(h.configPath)
+	cfg, err := h.readConfig()
 	if err != nil {
 		log.Printf("[Admin] Failed to read config for delete proxy: %v", err)
 		http.Error(w, "Cannot read config", http.StatusInternalServerError)
-		return
-	}
-	var cfg FullConfig
-	if err := yaml.Unmarshal(data, &cfg); err != nil {
-		log.Printf("[Admin] Failed to parse config for delete proxy: %v", err)
-		http.Error(w, "Cannot parse config", http.StatusInternalServerError)
 		return
 	}
 	newProxies := make([]pac.ExternalProxy, 0, len(cfg.Proxy.ExternalProxies))
@@ -1365,7 +1339,7 @@ func (h *Handler) handleDeleteProxy(w http.ResponseWriter, r *http.Request, id s
 		return
 	}
 	cfg.Proxy.ExternalProxies = newProxies
-	if err := h.writeFullConfig(cfg); err != nil {
+	if err := h.writeFullConfig(*cfg); err != nil {
 		log.Printf("[Admin] Failed to write config after delete proxy: %v", err)
 		http.Error(w, "Failed to save config", http.StatusInternalServerError)
 		return
@@ -1381,16 +1355,10 @@ func (h *Handler) handleGetProxyByID(w http.ResponseWriter, r *http.Request, id 
 		return
 	}
 	// Read config
-	data, err := os.ReadFile(h.configPath)
+	cfg, err := h.readConfig()
 	if err != nil {
 		log.Printf("[Admin] Failed to read config for get proxy: %v", err)
 		http.Error(w, "Cannot read config", http.StatusInternalServerError)
-		return
-	}
-	var cfg FullConfig
-	if err := yaml.Unmarshal(data, &cfg); err != nil {
-		log.Printf("[Admin] Failed to parse config for get proxy: %v", err)
-		http.Error(w, "Cannot parse config", http.StatusInternalServerError)
 		return
 	}
 	// Find proxy
@@ -1459,28 +1427,24 @@ func (h *Handler) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 		HTTPSListen:  status.HTTPSListen, // Use status if available, else from config
 	}
 	// Read config file to get all settings
-	data, err := os.ReadFile(h.configPath)
-	if err == nil {
-		var full FullConfig
-		if err := yaml.Unmarshal(data, &full); err == nil {
-			cfg.PACPath = full.Proxy.PACPath
-			cfg.DefaultExternalProxy = full.Proxy.DefaultExternalProxy
-			cfg.HTTPSListen = full.Proxy.HTTPSListen
-			cfg.PAC.LocalIP = full.PAC.LocalIP
-			cfg.PAC.DNSTimeout = full.PAC.DNSTimeout.String()
-			cfg.PAC.EvalTimeout = full.PAC.EvalTimeout.String()
-			cfg.PAC.EnableDNSCache = full.PAC.EnableDNSCache
-			cfg.PAC.DNSMaxEntries = full.PAC.DNSMaxEntries
-			cfg.PAC.DNSTTL = full.PAC.DNSTTL.String()
-			cfg.PAC.CacheEnabled = full.PAC.CacheEnabled
-			cfg.PAC.CacheMaxSize = full.PAC.CacheMaxSize
-			cfg.PAC.CacheTTL = full.PAC.CacheTTL.String()
-			cfg.PAC.EnableURLGlob = full.PAC.EnableURLGlob
-			cfg.TLS.CertificateFile = full.Proxy.TLS.CertificateFile
-			cfg.TLS.KeyFile = full.Proxy.TLS.KeyFile
-			cfg.TLS.CAFile = full.Proxy.TLS.CAFile
-			cfg.TLS.ClientAuth = full.Proxy.TLS.ClientAuth
-		}
+	if full, err := h.readConfig(); err == nil {
+		cfg.PACPath = full.Proxy.PACPath
+		cfg.DefaultExternalProxy = full.Proxy.DefaultExternalProxy
+		cfg.HTTPSListen = full.Proxy.HTTPSListen
+		cfg.PAC.LocalIP = full.PAC.LocalIP
+		cfg.PAC.DNSTimeout = full.PAC.DNSTimeout.String()
+		cfg.PAC.EvalTimeout = full.PAC.EvalTimeout.String()
+		cfg.PAC.EnableDNSCache = full.PAC.EnableDNSCache
+		cfg.PAC.DNSMaxEntries = full.PAC.DNSMaxEntries
+		cfg.PAC.DNSTTL = full.PAC.DNSTTL.String()
+		cfg.PAC.CacheEnabled = full.PAC.CacheEnabled
+		cfg.PAC.CacheMaxSize = full.PAC.CacheMaxSize
+		cfg.PAC.CacheTTL = full.PAC.CacheTTL.String()
+		cfg.PAC.EnableURLGlob = full.PAC.EnableURLGlob
+		cfg.TLS.CertificateFile = full.Proxy.TLS.CertificateFile
+		cfg.TLS.KeyFile = full.Proxy.TLS.KeyFile
+		cfg.TLS.CAFile = full.Proxy.TLS.CAFile
+		cfg.TLS.ClientAuth = full.Proxy.TLS.ClientAuth
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(cfg)
@@ -1520,16 +1484,10 @@ func (h *Handler) handlePutConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Load full config
-	data, err := os.ReadFile(h.configPath)
+	cfg, err := h.readConfig()
 	if err != nil {
 		log.Printf("[Admin] Failed to read config for put: %v", err)
 		http.Error(w, "Cannot read config", http.StatusInternalServerError)
-		return
-	}
-	var cfg FullConfig
-	if err := yaml.Unmarshal(data, &cfg); err != nil {
-		log.Printf("[Admin] Failed to parse config: %v", err)
-		http.Error(w, "Cannot parse config", http.StatusInternalServerError)
 		return
 	}
 	restartRequired := false
@@ -1637,7 +1595,7 @@ func (h *Handler) handlePutConfig(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Write updated config
-	if err := h.writeFullConfig(cfg); err != nil {
+	if err := h.writeFullConfig(*cfg); err != nil {
 		log.Printf("[Admin] Failed to write config: %v", err)
 		http.Error(w, "Failed to save config", http.StatusInternalServerError)
 		return
