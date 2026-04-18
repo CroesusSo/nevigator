@@ -1,5 +1,0 @@
-- [x] Identify the SOCKS5 reply length bug in router/router.go
-- [x] Fix the buffer size from 4 to 10 bytes in dialSOCKS5WithAuth function
-- [x] Add explanatory comments about consuming BND.ADDR and BND.PORT per SOCKS5 spec
-- [x] Verify the fix resolves "wrong version number" SSL errors with HTTPS via SOCKS5
-- [x] Document the fix in OpenSpec change tracking (this task list)

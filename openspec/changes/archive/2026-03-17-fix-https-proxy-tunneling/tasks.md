@@ -1,7 +1,0 @@
-- [x] Identify the incorrect HTTPS CONNECT implementation in proxy/server.go
-- [x] Refactor handleHTTPSConnect to implement proper TCP tunneling behavior
-- [x] Remove incorrect TLS handshake with client for CONNECT requests
-- [x] Add SNI extraction from ClientHello for potential routing enhancements
-- [x] Preserve connection tracking and relay functionality
-- [x] Verify fix resolves "wrong version number" SSL errors with HTTPS CONNECT
-- [x] Document the fix in OpenSpec change tracking (this task list)
