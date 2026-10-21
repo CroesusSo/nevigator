@@ -194,18 +194,19 @@ type TCPKeepAliveConfig struct {
 }
 
 // KeepAlive returns the probe parameters to apply, defaulting Idle/Interval
-// to 30s and Count to 3 when unset, giving ~1m detection. A zero-value config
-// returns Enable=false so callers can skip the syscall entirely.
+// to 15s/5s and Count to 3 when unset, so a dead peer is detected after about
+// 30s of silence. A zero-value config returns Enable=false so callers can skip
+// the syscall entirely.
 func (k TCPKeepAliveConfig) KeepAlive() (enabled bool, idle, interval time.Duration, count int) {
 	if !k.Enabled {
 		return false, 0, 0, 0
 	}
 	idle, interval, count = k.Idle, k.Interval, k.Count
 	if idle <= 0 {
-		idle = 30 * time.Second
+		idle = 15 * time.Second
 	}
 	if interval <= 0 {
-		interval = 10 * time.Second
+		interval = 5 * time.Second
 	}
 	if count <= 0 {
 		count = 3

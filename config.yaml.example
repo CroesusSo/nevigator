@@ -15,14 +15,14 @@ proxy:
   # goroutine. Defaults to 10s when unset.
   # socks5_handshake_timeout: 10s
   # TCP keepalive probes on accepted client connections and outbound dials.
-  # Idle/Interval/Count default to 30s/10s/3 (~1m to detect a dead peer) when
+  # Idle/Interval/Count default to 15s/5s/3 (~30s to detect a dead peer) when
   # enabled but unset. Detection takes roughly idle + interval*count.
   # Disabled by default; the relay path is an opaque tunnel, so this is the only
   # way to keep idle client connections warm.
   # tcp_keepalive:
   #   enabled: true
-  #   idle: 30s
-  #   interval: 10s
+  #   idle: 15s
+  #   interval: 5s
   #   count: 3
   tls:
     certificate_file: ""
@@ -75,8 +75,8 @@ gfw:
 #       interval: 30s
 #       tcp:
 #         enabled: true
-#         idle: 30s
-#         interval: 10s
+#         idle: 15s
+#         interval: 5s
 #         count: 3
 #   - id: "socks5-tw"
 #     kind: "socks5"

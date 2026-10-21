@@ -630,7 +630,7 @@ func dialSSH(cfg pac.ExternalProxy) (*ssh.Client, error) {
 	addr := net.JoinHostPort(host, strconv.Itoa(port))
 
 	// Use custom dialer with TCP keepalive
-	ka := pac.TCPKeepAliveConfig{Enabled: true, Idle: 30 * time.Second}
+	ka := pac.TCPKeepAliveConfig{Enabled: true}
 	if cfg.Keepalive.TCP != nil {
 		ka = *cfg.Keepalive.TCP
 	}

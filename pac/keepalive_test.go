@@ -17,10 +17,10 @@ func TestKeepAliveDefaults(t *testing.T) {
 		wantCnt  int
 	}{
 		{"disabled zero value", TCPKeepAliveConfig{}, false, 0, 0, 0},
-		{"enabled uses defaults", TCPKeepAliveConfig{Enabled: true}, true, 30 * time.Second, 10 * time.Second, 3},
+		{"enabled uses defaults", TCPKeepAliveConfig{Enabled: true}, true, 15 * time.Second, 5 * time.Second, 3},
 		{"explicit values kept", TCPKeepAliveConfig{Enabled: true, Idle: 5 * time.Second, Interval: time.Second, Count: 2}, true, 5 * time.Second, time.Second, 2},
-		{"partial overrides defaults", TCPKeepAliveConfig{Enabled: true, Idle: time.Minute}, true, time.Minute, 10 * time.Second, 3},
-		{"zero count falls back", TCPKeepAliveConfig{Enabled: true, Count: 0}, true, 30 * time.Second, 10 * time.Second, 3},
+		{"partial overrides defaults", TCPKeepAliveConfig{Enabled: true, Idle: 60 * time.Second}, true, 60 * time.Second, 5 * time.Second, 3},
+		{"zero count falls back", TCPKeepAliveConfig{Enabled: true, Count: 0}, true, 15 * time.Second, 5 * time.Second, 3},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

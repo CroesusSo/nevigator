@@ -8,9 +8,11 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/yourorg/proxy-pac/pac"
 	"github.com/yourorg/proxy-pac/status"
 )
 
@@ -348,5 +350,54 @@ func TestHandlePutConfig_InvalidJSON(t *testing.T) {
 
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("status code = %d, want %d", w.Code, http.StatusBadRequest)
+	}
+}
+
+// TestHandleGetConfig_TCPKeepAliveReportsDefaults verifies the read-only GET
+// reports the effective values, including defaults applied at runtime.
+func TestHandleGetConfig_TCPKeepAliveReportsDefaults(t *testing.T) {
+	cfgPath := writeTempConfig(t, "proxy:\n  tcp_keepalive:\n    enabled: true\n")
+	h := &Handler{
+		statusProvider: &mockStatusProvider{serverStatus: status.ServerStatus{}},
+		configPath:     cfgPath,
+	}
+	w := httptest.NewRecorder()
+	h.handleConfig(w, httptest.NewRequest(http.MethodGet, "/api/config", nil))
+
+	var resp struct {
+		TCPKeepAlive struct {
+			Enabled  bool   `json:"enabled"`
+			Idle     string `json:"idle"`
+			Interval string `json:"interval"`
+			Count    int    `json:"count"`
+		} `json:"tcp_keepalive"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if !resp.TCPKeepAlive.Enabled {
+		t.Fatal("expected keepalive reported as enabled")
+	}
+	// Defaults come from TCPKeepAliveConfig.KeepAlive().
+	if resp.TCPKeepAlive.Idle != "15s" {
+		t.Errorf("idle = %q, want 15s (default)", resp.TCPKeepAlive.Idle)
+	}
+	if resp.TCPKeepAlive.Interval != "5s" {
+		t.Errorf("interval = %q, want 5s (default)", resp.TCPKeepAlive.Interval)
+	}
+	if resp.TCPKeepAlive.Count != 3 {
+		t.Errorf("count = %d, want 3 (default)", resp.TCPKeepAlive.Count)
+	}
+}
+
+// The defaults must stay in sync with what the proxy actually applies.
+func TestKeepAliveDefaultsMatchAdminReport(t *testing.T) {
+	_, idle, interval, count := pac.TCPKeepAliveConfig{Enabled: true}.KeepAlive()
+	if idle != 15*time.Second || interval != 5*time.Second || count != 3 {
+		t.Fatalf("defaults = %v/%v/%d, want 15s/5s/3", idle, interval, count)
+	}
+	total := idle + time.Duration(interval)*time.Duration(count)
+	if total != 30*time.Second {
+		t.Errorf("default detection time = %v, want 30s", total)
 	}
 }
