@@ -187,10 +187,56 @@ type RouterConfig struct {
 // This is distinct from KeepaliveConfig, which drives the SSH-level
 // keepalive@openssh.com request.
 type TCPKeepAliveConfig struct {
-	Enabled  bool          `yaml:"enabled"`
-	Idle     time.Duration `yaml:"idle"`
-	Interval time.Duration `yaml:"interval"`
-	Count    int           `yaml:"count"`
+	Enabled  bool          `yaml:"enabled" json:"enabled"`
+	Idle     time.Duration `yaml:"idle" json:"idle"`
+	Interval time.Duration `yaml:"interval" json:"interval"`
+	Count    int           `yaml:"count" json:"count"`
+}
+
+// MarshalJSON renders the durations as strings ("15s") rather than the raw
+// nanosecond integers a time.Duration would otherwise produce.
+func (k TCPKeepAliveConfig) MarshalJSON() ([]byte, error) {
+	type Alias TCPKeepAliveConfig
+	aux := &struct {
+		Idle     string `json:"idle,omitempty"`
+		Interval string `json:"interval,omitempty"`
+		*Alias
+	}{
+		Idle:     k.Idle.String(),
+		Interval: k.Interval.String(),
+		Alias:    (*Alias)(&k),
+	}
+	return json.Marshal(aux)
+}
+
+// UnmarshalJSON accepts the string durations produced by MarshalJSON.
+func (k *TCPKeepAliveConfig) UnmarshalJSON(data []byte) error {
+	type Alias TCPKeepAliveConfig
+	aux := &struct {
+		Idle     string `json:"idle"`
+		Interval string `json:"interval"`
+		*Alias
+	}{
+		Alias: (*Alias)(k),
+	}
+	if err := json.Unmarshal(data, &aux); err != nil {
+		return err
+	}
+	if aux.Idle != "" {
+		d, err := time.ParseDuration(aux.Idle)
+		if err != nil {
+			return fmt.Errorf("invalid json duration for idle: %v", err)
+		}
+		k.Idle = d
+	}
+	if aux.Interval != "" {
+		d, err := time.ParseDuration(aux.Interval)
+		if err != nil {
+			return fmt.Errorf("invalid json duration for interval: %v", err)
+		}
+		k.Interval = d
+	}
+	return nil
 }
 
 // KeepAlive returns the probe parameters to apply, defaulting Idle/Interval

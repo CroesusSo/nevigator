@@ -567,6 +567,13 @@ let currentEditProxyKind = null;
        } else {
          keepaliveHtml = '<span style="color:#999">Disabled</span>';
        }
+       // TCP-level probes are configured independently of the SSH-level
+       // keepalive, so show them alongside it.
+       const ka = p.keepalive_tcp || {};
+       if (ka.enabled) {
+         keepaliveHtml += '<br><span style="color:green">TCP</span> ' +
+           (ka.idle || '') + '/' + (ka.interval || '') + '×' + (ka.count ?? '');
+       }
        tr.innerHTML = '<td>' + p.id + '</td><td>' + p.address + '</td><td>' + (p.has_auth ? 'Yes' : 'No') + '</td><td>' + keepaliveHtml + '</td><td><button class="btn btn-sm btn-secondary" onclick="editProxy(\'' + p.id + '\')">Edit</button> <button class="btn btn-sm btn-danger" onclick="deleteProxy(\'' + p.id + '\')">Delete</button> <button class="btn btn-sm btn-secondary" onclick="testProxy(\'' + p.id + '\')">Test</button></td>';
        tbody.appendChild(tr);
      });
@@ -601,6 +608,10 @@ let currentEditProxyKind = null;
        document.getElementById('new-ssh-host-key-check').value = 'strict';
        document.getElementById('new-ssh-keepalive-enabled').checked = false;
        document.getElementById('new-ssh-keepalive-interval').value = '';
+       document.getElementById('new-ssh-keepalive-tcp-enabled').checked = false;
+       document.getElementById('new-ssh-keepalive-tcp-idle').value = '';
+       document.getElementById('new-ssh-keepalive-tcp-interval').value = '';
+       document.getElementById('new-ssh-keepalive-tcp-count').value = '';
        document.getElementById('new-ssh-test-result').textContent = '';
        document.getElementById('save-new-ssh-btn').disabled = true;
        // Initialize auth field visibility
@@ -758,6 +769,18 @@ let currentEditProxyKind = null;
            data.keepalive.interval = keepaliveInterval;
          }
        }
+       // TCP-level probe tuning for this tunnel, independent of the above.
+       if (document.getElementById('new-ssh-keepalive-tcp-enabled').checked) {
+         const ka = { enabled: true };
+         const kaIdle = document.getElementById('new-ssh-keepalive-tcp-idle').value.trim();
+         const kaInterval = document.getElementById('new-ssh-keepalive-tcp-interval').value.trim();
+         const kaCount = document.getElementById('new-ssh-keepalive-tcp-count').value.trim();
+         if (kaIdle) ka.idle = kaIdle;
+         if (kaInterval) ka.interval = kaInterval;
+         if (kaCount !== '') ka.count = parseInt(kaCount, 10);
+         data.keepalive = data.keepalive || {};
+         data.keepalive.tcp = ka;
+       }
        fetch('/api/proxies', {
          method: 'POST',
          headers: {'Content-Type': 'application/json'},
@@ -865,6 +888,13 @@ let currentEditProxyKind = null;
         const keepaliveInterval = proxy.keepalive && proxy.keepalive.interval ? String(proxy.keepalive.interval) : '';
         document.getElementById('edit-ssh-keepalive-enabled').checked = keepaliveEnabled;
         document.getElementById('edit-ssh-keepalive-interval').value = keepaliveInterval;
+        // TCP-level probe tuning. The single-proxy endpoint returns the raw
+        // proxy, so the TCP block sits under keepalive.tcp.
+        const kaCfg = (proxy.keepalive && proxy.keepalive.tcp) || {};
+        document.getElementById('edit-ssh-keepalive-tcp-enabled').checked = !!kaCfg.enabled;
+        document.getElementById('edit-ssh-keepalive-tcp-idle').value = kaCfg.enabled ? (kaCfg.idle || '') : '';
+        document.getElementById('edit-ssh-keepalive-tcp-interval').value = kaCfg.enabled ? (kaCfg.interval || '') : '';
+        document.getElementById('edit-ssh-keepalive-tcp-count').value = kaCfg.enabled ? (kaCfg.count ?? '') : '';
         // Toggle field visibility based on current values
         toggleEditSSHAuthFields();
         toggleEditSSHKeepalive();
@@ -939,6 +969,19 @@ let currentEditProxyKind = null;
     } else {
       payload.keepalive_enabled = false;
     }
+    // TCP-level probe tuning. Always sent so the field can be turned off
+    // explicitly rather than being left at whatever it was.
+    const kaEnabled = document.getElementById('edit-ssh-keepalive-tcp-enabled').checked;
+    const ka = { enabled: kaEnabled };
+    if (kaEnabled) {
+      const kaIdle = document.getElementById('edit-ssh-keepalive-tcp-idle').value.trim();
+      const kaInterval = document.getElementById('edit-ssh-keepalive-tcp-interval').value.trim();
+      const kaCount = document.getElementById('edit-ssh-keepalive-tcp-count').value.trim();
+      if (kaIdle) ka.idle = kaIdle;
+      if (kaInterval) ka.interval = kaInterval;
+      if (kaCount !== '') ka.count = parseInt(kaCount, 10);
+    }
+    payload.keepalive_tcp = ka;
 
     fetch('/api/proxies/' + encodeURIComponent(id), {
       method: 'PUT',

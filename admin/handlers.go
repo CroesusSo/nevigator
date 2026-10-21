@@ -436,7 +436,13 @@ func (h *Handler) handleConnections(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode([]status.Connection{})
 		return
 	}
-	json.NewEncoder(w).Encode(h.statusProvider.Connections())
+	// A nil slice marshals to JSON null, which breaks any client that iterates
+	// the response. Emit an empty array instead.
+	conns := h.statusProvider.Connections()
+	if conns == nil {
+		conns = []status.Connection{}
+	}
+	json.NewEncoder(w).Encode(conns)
 }
 
 // handleCacheStats returns cache statistics.
@@ -470,7 +476,9 @@ func (h *Handler) handleRules(w http.ResponseWriter, r *http.Request) {
 
 // handleListRules returns all rules (user + GFW).
 func (h *Handler) handleListRules(w http.ResponseWriter, r *http.Request) {
-	var allRules []gfw.Rule
+	// Start from an empty slice, not nil: a nil slice marshals to JSON null
+	// and clients that iterate the result would break on an empty rule set.
+	allRules := []gfw.Rule{}
 
 	// User rules
 	if h.userPath != "" {
@@ -937,9 +945,64 @@ func (h *Handler) handleListProxies(w http.ResponseWriter, r *http.Request) {
 		}
 		proxies[i]["keepalive_enabled"] = p.Keepalive.Enabled
 		proxies[i]["keepalive_interval"] = keepaliveInterval
+		// TCP-level probe tuning. Report the effective values when enabled so
+		// the UI can show what is actually in force rather than blanks.
+		ka := map[string]any{"enabled": false}
+		if p.Keepalive.TCP != nil {
+			ka["enabled"] = p.Keepalive.TCP.Enabled
+			if p.Keepalive.TCP.Enabled {
+				_, idle, interval, count := p.Keepalive.TCP.KeepAlive()
+				ka["idle"] = idle.String()
+				ka["interval"] = interval.String()
+				ka["count"] = count
+			}
+		}
+		proxies[i]["keepalive_tcp"] = ka
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(proxies)
+}
+
+// keepaliveTCPReq is the wire form for the TCP-level probe tuning nested under
+// a proxy's keepalive block. Pointer fields let an absent key leave the stored
+// value alone, while an explicit object replaces it.
+type keepaliveTCPReq struct {
+	Enabled  *bool   `json:"enabled"`
+	Idle     *string `json:"idle"`
+	Interval *string `json:"interval"`
+	Count    *int    `json:"count"`
+}
+
+// applyKeepaliveTCP merges req into dst. A nil req means the field was absent,
+// so dst is left untouched.
+func applyKeepaliveTCP(dst *pac.TCPKeepAliveConfig, req *keepaliveTCPReq) error {
+	if req == nil {
+		return nil
+	}
+	if req.Enabled != nil {
+		dst.Enabled = *req.Enabled
+	}
+	if s := req.Idle; s != nil {
+		d, err := time.ParseDuration(*s)
+		if err != nil || d <= 0 {
+			return fmt.Errorf("invalid keepalive_tcp.idle %q", *s)
+		}
+		dst.Idle = d
+	}
+	if s := req.Interval; s != nil {
+		d, err := time.ParseDuration(*s)
+		if err != nil || d <= 0 {
+			return fmt.Errorf("invalid keepalive_tcp.interval %q", *s)
+		}
+		dst.Interval = d
+	}
+	if req.Count != nil {
+		if *req.Count < 0 {
+			return fmt.Errorf("invalid keepalive_tcp.count %d", *req.Count)
+		}
+		dst.Count = *req.Count
+	}
+	return nil
 }
 
 // handleCreateProxy adds a new external proxy.
@@ -956,7 +1019,8 @@ func (h *Handler) handleCreateProxy(w http.ResponseWriter, r *http.Request) {
 		HostKeyCheck       string `json:"host_key_check"`
 		HostKeyFingerprint string `json:"host_key_fingerprint"`
 		KeepaliveEnabled   *bool  `json:"keepalive_enabled"`
-		KeepaliveInterval  string `json:"keepalive_interval"`
+		KeepaliveInterval  string           `json:"keepalive_interval"`
+		KeepaliveTCP       *keepaliveTCPReq `json:"keepalive_tcp"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "Invalid JSON", http.StatusBadRequest)
@@ -998,6 +1062,15 @@ func (h *Handler) handleCreateProxy(w http.ResponseWriter, r *http.Request) {
 	// Ensure default if enabled and interval zero
 	if newProxy.Keepalive.Enabled && newProxy.Keepalive.Interval == 0 {
 		newProxy.Keepalive.Interval = 30 * time.Second
+	}
+	// TCP-level probe tuning, independent of the SSH-level request above.
+	if req.KeepaliveTCP != nil {
+		ka := pac.TCPKeepAliveConfig{}
+		if err := applyKeepaliveTCP(&ka, req.KeepaliveTCP); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		newProxy.Keepalive.TCP = &ka
 	}
 	// Validate address format and loop prevention
 	status := h.statusProvider.Status()
@@ -1256,8 +1329,9 @@ func (h *Handler) handleUpdateProxy(w http.ResponseWriter, r *http.Request, id s
 		PrivateKeyPath     string `json:"private_key_path"`
 		HostKeyCheck       string `json:"host_key_check"`
 		HostKeyFingerprint string `json:"host_key_fingerprint"`
-		KeepaliveEnabled   *bool  `json:"keepalive_enabled"`
-		KeepaliveInterval  string `json:"keepalive_interval"`
+		KeepaliveEnabled   *bool            `json:"keepalive_enabled"`
+		KeepaliveInterval  string           `json:"keepalive_interval"`
+		KeepaliveTCP       *keepaliveTCPReq `json:"keepalive_tcp"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&upd); err != nil {
 		http.Error(w, "Invalid JSON", http.StatusBadRequest)
@@ -1309,6 +1383,19 @@ func (h *Handler) handleUpdateProxy(w http.ResponseWriter, r *http.Request, id s
 	// Ensure keepalive defaults if needed
 	if proxy.Keepalive.Enabled && proxy.Keepalive.Interval == 0 {
 		proxy.Keepalive.Interval = 30 * time.Second
+	}
+	// TCP-level probe tuning. An absent field leaves the stored value alone;
+	// an explicit object replaces it.
+	if upd.KeepaliveTCP != nil {
+		ka := pac.TCPKeepAliveConfig{}
+		if proxy.Keepalive.TCP != nil {
+			ka = *proxy.Keepalive.TCP
+		}
+		if err := applyKeepaliveTCP(&ka, upd.KeepaliveTCP); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		proxy.Keepalive.TCP = &ka
 	}
 	// Validate SSH configuration
 	if err := validateSSHProxy(&proxy); err != nil {

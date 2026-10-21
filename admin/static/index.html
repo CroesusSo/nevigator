@@ -277,6 +277,13 @@
           <input type="checkbox" id="edit-ssh-keepalive-enabled">
           <span style="margin-left: 1rem;">Interval: <input id="edit-ssh-keepalive-interval" placeholder="e.g., 30s, 1m30s" style="width: 120px;"></span>
         </div>
+        <div class="form-row">
+          <label>TCP keepalive</label>
+          <input type="checkbox" id="new-ssh-keepalive-tcp-enabled">
+          <span style="margin-left: 1rem;">Idle: <input id="new-ssh-keepalive-tcp-idle" placeholder="15s" style="width: 90px;"></span>
+          <span style="margin-left: 0.5rem;">Interval: <input id="new-ssh-keepalive-tcp-interval" placeholder="5s" style="width: 90px;"></span>
+          <span style="margin-left: 0.5rem;">Count: <input id="new-ssh-keepalive-tcp-count" type="number" min="0" placeholder="3" style="width: 70px;"></span>
+        </div>
           <div class="form-row">
             <button class="btn btn-secondary" onclick="testNewSSHProxy()">Test</button>
             <span id="new-ssh-test-result" style="margin-left:1rem;"></span>
@@ -367,6 +374,13 @@
           <label>Keepalive</label>
           <input type="checkbox" id="edit-ssh-keepalive-enabled" onchange="toggleEditSSHKeepalive()">
           <span style="margin-left: 1rem;">Interval: <input id="edit-ssh-keepalive-interval" placeholder="30s" style="width: 100px;"></span>
+        </div>
+        <div class="form-row">
+          <label>TCP keepalive</label>
+          <input type="checkbox" id="edit-ssh-keepalive-tcp-enabled">
+          <span style="margin-left: 1rem;">Idle: <input id="edit-ssh-keepalive-tcp-idle" placeholder="15s" style="width: 90px;"></span>
+          <span style="margin-left: 0.5rem;">Interval: <input id="edit-ssh-keepalive-tcp-interval" placeholder="5s" style="width: 90px;"></span>
+          <span style="margin-left: 0.5rem;">Count: <input id="edit-ssh-keepalive-tcp-count" type="number" min="0" placeholder="3" style="width: 70px;"></span>
         </div>
         <div class="form-row">
           <button class="btn btn-secondary" onclick="testProxyFromEdit()">Test</button>
