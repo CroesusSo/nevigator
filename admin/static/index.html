@@ -429,6 +429,52 @@
         </div>
 
         <div class="card">
+          <h3>SOCKS5 Inbound</h3>
+          <p class="hint">Authentication required from SOCKS5 clients, and the handshake time limit. Restart required after changes.</p>
+          <div class="form-row">
+            <label>
+              <input type="checkbox" id="socks5-auth-enabled">
+              Require username/password authentication
+            </label>
+          </div>
+          <div class="form-row">
+            <label>Username</label>
+            <input id="socks5-auth-username" placeholder="leave blank to disable auth">
+          </div>
+          <div class="form-row">
+            <label>Password</label>
+            <input id="socks5-auth-password" type="password" placeholder="unchanged if blank">
+          </div>
+          <div class="form-row">
+            <label>Handshake timeout</label>
+            <input id="socks5-handshake-timeout" placeholder="10s">
+          </div>
+        </div>
+
+        <div class="card">
+          <h3>TCP Keepalive</h3>
+          <p class="hint">Probe idle connections to detect dead peers. Detection takes roughly idle + interval &times; count. Restart required after changes.</p>
+          <div class="form-row">
+            <label>
+              <input type="checkbox" id="tcp-keepalive-enabled">
+              Enable TCP keepalive probes
+            </label>
+          </div>
+          <div class="form-row">
+            <label>Idle before first probe</label>
+            <input id="tcp-keepalive-idle" placeholder="15s">
+          </div>
+          <div class="form-row">
+            <label>Interval between probes</label>
+            <input id="tcp-keepalive-interval" placeholder="5s">
+          </div>
+          <div class="form-row">
+            <label>Unanswered probes before drop</label>
+            <input id="tcp-keepalive-count" type="number" min="0" placeholder="3">
+          </div>
+        </div>
+
+        <div class="card">
           <h3>Paths & Devices</h3>
            <div class="form-row">
              <label>PAC file path</label>

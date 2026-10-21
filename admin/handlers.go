@@ -1512,12 +1512,26 @@ func (h *Handler) handlePutConfig(w http.ResponseWriter, r *http.Request) {
 			CacheMaxSize   int    `json:"cache_max_size"`
 			CacheTTL       string `json:"cache_ttl"`
 		} `json:"pac"`
-		TLS struct {
+		TLS                  struct {
 			CertificateFile string `json:"certificate_file"`
 			KeyFile         string `json:"key_file"`
 			CAFile          string `json:"ca_file"`
 			ClientAuth      string `json:"client_auth"`
 		} `json:"tls"`
+		// Inbound SOCKS5 auth. Pointers distinguish "absent" (leave the
+		// existing value alone) from an explicit null/empty (clear it), which
+		// a non-pointer string cannot express.
+		SOCKS5Auth *struct {
+			Username string `json:"username"`
+			Password string `json:"password"`
+		} `json:"socks5_auth"`
+		SOCKS5HandshakeTimeout *string `json:"socks5_handshake_timeout"`
+		TCPKeepAlive           *struct {
+			Enabled  *bool   `json:"enabled"`
+			Idle     *string `json:"idle"`
+			Interval *string `json:"interval"`
+			Count    *int    `json:"count"`
+		} `json:"tcp_keepalive"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&upd); err != nil {
 		http.Error(w, "Invalid JSON", http.StatusBadRequest)
@@ -1632,6 +1646,76 @@ func (h *Handler) handlePutConfig(w http.ResponseWriter, r *http.Request) {
 				needRegen = true
 			}
 		}
+	}
+
+	// Inbound SOCKS5 auth. An explicit empty object clears the requirement;
+	// omitting socks5_auth entirely leaves the current setting untouched.
+	if upd.SOCKS5Auth != nil {
+		u, p := upd.SOCKS5Auth.Username, upd.SOCKS5Auth.Password
+		if u == "" && p == "" {
+			cfg.Proxy.SOCKS5Auth = nil
+		} else {
+			if cfg.Proxy.SOCKS5Auth == nil {
+				cfg.Proxy.SOCKS5Auth = &pac.SOCKS5AuthConfig{}
+			}
+			if u != "" {
+				cfg.Proxy.SOCKS5Auth.Username = u
+			}
+			if p != "" {
+				cfg.Proxy.SOCKS5Auth.Password = p
+			}
+		}
+		restartRequired = true
+	}
+	if upd.SOCKS5HandshakeTimeout != nil {
+		d, err := time.ParseDuration(*upd.SOCKS5HandshakeTimeout)
+		if err != nil {
+			http.Error(w, "Invalid socks5_handshake_timeout: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		if d <= 0 {
+			http.Error(w, "socks5_handshake_timeout must be positive", http.StatusBadRequest)
+			return
+		}
+		if d != cfg.Proxy.SOCKS5HandshakeTimeout {
+			cfg.Proxy.SOCKS5HandshakeTimeout = d
+			restartRequired = true
+		}
+	}
+	if upd.TCPKeepAlive != nil {
+		before := cfg.Proxy.TCPKeepAlive
+		ka := before
+		if upd.TCPKeepAlive.Enabled != nil {
+			ka.Enabled = *upd.TCPKeepAlive.Enabled
+		}
+		if s := upd.TCPKeepAlive.Idle; s != nil {
+			d, err := time.ParseDuration(*s)
+			if err != nil || d <= 0 {
+				http.Error(w, "Invalid tcp_keepalive.idle: "+*s, http.StatusBadRequest)
+				return
+			}
+			ka.Idle = d
+		}
+		if s := upd.TCPKeepAlive.Interval; s != nil {
+			d, err := time.ParseDuration(*s)
+			if err != nil || d <= 0 {
+				http.Error(w, "Invalid tcp_keepalive.interval: "+*s, http.StatusBadRequest)
+				return
+			}
+			ka.Interval = d
+		}
+		if upd.TCPKeepAlive.Count != nil {
+			if *upd.TCPKeepAlive.Count < 0 {
+				http.Error(w, "Invalid tcp_keepalive.count", http.StatusBadRequest)
+				return
+			}
+			ka.Count = *upd.TCPKeepAlive.Count
+		}
+		if ka.Enabled != before.Enabled || ka.Idle != before.Idle ||
+			ka.Interval != before.Interval || ka.Count != before.Count {
+			restartRequired = true
+		}
+		cfg.Proxy.TCPKeepAlive = ka
 	}
 
 	// Write updated config

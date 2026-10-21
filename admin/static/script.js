@@ -1012,7 +1012,29 @@ let currentEditProxyKind = null;
         if (document.getElementById('tls-key')) document.getElementById('tls-key').value = cfg.tls?.key_file || '';
         if (document.getElementById('tls-ca')) document.getElementById('tls-ca').value = cfg.tls?.ca_file || '';
         if (document.getElementById('tls-client-auth')) document.getElementById('tls-client-auth').value = cfg.tls?.client_auth || '';
-        
+
+        // SOCKS5 inbound auth + handshake timeout.
+        // The password is never returned by the API, so the field stays blank;
+        // leaving it blank on save keeps the stored password.
+        const sAuth = cfg.socks5_auth || {};
+        if (document.getElementById('socks5-auth-enabled')) {
+            document.getElementById('socks5-auth-enabled').checked = !!(sAuth.username || sAuth.has_password);
+        }
+        if (document.getElementById('socks5-auth-username')) document.getElementById('socks5-auth-username').value = sAuth.username || '';
+        if (document.getElementById('socks5-auth-password')) document.getElementById('socks5-auth-password').value = '';
+        if (document.getElementById('socks5-auth-password')) {
+            document.getElementById('socks5-auth-password').placeholder = sAuth.has_password ? 'unchanged (set)' : 'unchanged if blank';
+        }
+        if (document.getElementById('socks5-handshake-timeout')) document.getElementById('socks5-handshake-timeout').value = cfg.socks5_handshake_timeout || '';
+
+        // TCP keepalive. Only prefill the timings when probes are on, so a
+        // disabled config shows blanks rather than the defaults in use.
+        const ka = cfg.tcp_keepalive || {};
+        if (document.getElementById('tcp-keepalive-enabled')) document.getElementById('tcp-keepalive-enabled').checked = !!ka.enabled;
+        if (document.getElementById('tcp-keepalive-idle')) document.getElementById('tcp-keepalive-idle').value = ka.enabled ? (ka.idle || '') : '';
+        if (document.getElementById('tcp-keepalive-interval')) document.getElementById('tcp-keepalive-interval').value = ka.enabled ? (ka.interval || '') : '';
+        if (document.getElementById('tcp-keepalive-count')) document.getElementById('tcp-keepalive-count').value = ka.enabled ? (ka.count ?? '') : '';
+
          // PAC settings
          if (document.getElementById('local-ip')) document.getElementById('local-ip').value = cfg.pac?.local_ip || '';
          if (document.getElementById('dns-timeout')) document.getElementById('dns-timeout').value = formatDuration(cfg.pac?.dns_timeout);
@@ -1081,6 +1103,32 @@ let currentEditProxyKind = null;
           enable_url_glob: document.getElementById('enable-url-glob').checked
         }
       };
+
+      // SOCKS5 inbound auth. An empty username and password clears the
+      // requirement; a blank password with a username keeps the stored one.
+      const sAuthEnabled = document.getElementById('socks5-auth-enabled').checked;
+      const sAuthUser = document.getElementById('socks5-auth-username').value.trim();
+      const sAuthPass = document.getElementById('socks5-auth-password').value;
+      if (!sAuthEnabled) {
+        payload.socks5_auth = { username: '', password: '' };
+      } else if (sAuthUser || sAuthPass) {
+        payload.socks5_auth = { username: sAuthUser, password: sAuthPass };
+      }
+
+      const hsTimeout = document.getElementById('socks5-handshake-timeout').value.trim();
+      if (hsTimeout) payload.socks5_handshake_timeout = hsTimeout;
+
+      const kaEnabled = document.getElementById('tcp-keepalive-enabled').checked;
+      const kaIdle = document.getElementById('tcp-keepalive-idle').value.trim();
+      const kaInterval = document.getElementById('tcp-keepalive-interval').value.trim();
+      const kaCount = document.getElementById('tcp-keepalive-count').value.trim();
+      payload.tcp_keepalive = { enabled: kaEnabled };
+      if (kaEnabled) {
+        if (kaIdle) payload.tcp_keepalive.idle = kaIdle;
+        if (kaInterval) payload.tcp_keepalive.interval = kaInterval;
+        if (kaCount !== '') payload.tcp_keepalive.count = parseInt(kaCount, 10);
+      }
+
       fetch('/api/config', {
         method: 'PUT',
         headers: {'Content-Type': 'application/json'},
