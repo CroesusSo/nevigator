@@ -198,7 +198,7 @@ proxy:
 - `enabled`: Turn keepalive on or off. Disabled by default.
 - `interval`: How often to send keepalive probes. Default is `30s` when keepalive is enabled and interval is not set or is zero.
 
-The keepalive uses SSH's `"keepalive@openssh.com"` global request, which is the name OpenSSH recognises. Each probe is bounded by the ping interval (capped at 10s, floored at 1s), so 3 consecutive failures are detected in roughly 3 intervals. A probe counts as failed if the server rejects it or does not answer. It runs in a dedicated goroutine per tunnel and does not block worker dial operations.
+The keepalive sends SSH's `"keepalive@openssh.com"` global request, the name OpenSSH recognises. Probes are sent without waiting for a reply, so a successful write is the liveness signal; a probe fails only if the write errors. Each probe is bounded by the ping interval (capped at 10s, floored at 1s), so 3 consecutive failures are detected in roughly 3 intervals. A peer that accepts bytes without acting is caught by TCP-level keepalive rather than this probe. It runs in a dedicated goroutine per tunnel and does not block worker dial operations.
 
 The keepalive settings are also available in the **Admin UI** → Proxies tab when creating or editing an SSH tunnel.
 

@@ -5,6 +5,7 @@ import (
 	"crypto/rsa"
 	"fmt"
 	"net"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -937,19 +938,16 @@ func TestKeepalivePingTimeoutScalesWithInterval(t *testing.T) {
 	}
 }
 
-// TestKeepaliveDetectsRejectedProbe covers the case SendRequest reports as
-// ok=false with a nil error. Checking only err silently treats a server-side
-// refusal as a success, so a broken or wrong-request-name server would never be
-// detected.
-func TestKeepaliveDetectsRejectedProbe(t *testing.T) {
-	serverAddr, cleanup := startTestSSHServer(t)
+// TestKeepaliveDoesNotLeakGoroutinesOnHungServer pins why probes use
+// wantReply=false. Against a server that never answers, a probe that waits for
+// a reply parks inside ssh.(*mux).globalResponses and stays parked for the life
+// of the connection, leaking one goroutine per probe.
+func TestKeepaliveDoesNotLeakGoroutinesOnHungServer(t *testing.T) {
+	serverAddr, cleanup := startHungSSHServer(t)
 	defer cleanup()
 
 	orig := dialSSHVal.Load().(func(pac.ExternalProxy) (*ssh.Client, error))
 	defer dialSSHVal.Store(orig)
-
-	// Server refuses every request, which is what happens when the request name
-	// is wrong or the server is wedged but the TCP connection is alive.
 	dialSSHVal.Store(func(cfg pac.ExternalProxy) (*ssh.Client, error) {
 		return ssh.Dial("tcp", serverAddr, &ssh.ClientConfig{
 			User:            cfg.Username,
@@ -962,7 +960,7 @@ func TestKeepaliveDetectsRejectedProbe(t *testing.T) {
 	cfg := pac.ExternalProxy{
 		ID: "test", Kind: "ssh", Address: "host",
 		AuthMethod: "password", Password: "pass",
-		Keepalive: pac.KeepaliveConfig{Enabled: true, Interval: 20 * time.Millisecond},
+		Keepalive: pac.KeepaliveConfig{Enabled: true, Interval: 50 * time.Millisecond},
 	}
 	tunnel := NewTunnel(cfg)
 	defer tunnel.Close()
@@ -975,20 +973,84 @@ func TestKeepaliveDetectsRejectedProbe(t *testing.T) {
 		t.Fatal("tunnel did not connect")
 	}
 
-	// The live server answers keepalive@openssh.com and refuses anything else.
-	// Verify a refused probe is reported as a failure by checking that the
-	// failure counter moves when the probe is sent with a name sshd rejects.
-	c := tunnel.client.Load()
-	ok, _, err := c.SendRequest("keepalive@definitely-not-supported", true, nil)
-	t.Logf("refused probe -> ok=%v err=%v", ok, err)
-	if ok {
-		t.Fatal("test server unexpectedly accepted an unknown request")
+	// Count only goroutines parked in keepalive probing, not the total: other
+	// tests in this package leave goroutines finishing, so an absolute count is
+	// unstable.
+	parked := func() int {
+		buf := make([]byte, 1<<20)
+		n := runtime.Stack(buf, true)
+		count := 0
+		for _, g := range strings.Split(string(buf[:n]), "\n\n") {
+			if strings.Contains(g, "keepaliveLoop.func") &&
+				strings.Contains(g, "SendRequest") {
+				count++
+			}
+		}
+		return count
 	}
+
+	base := parked()
+	t.Logf("probe goroutines parked after connect: %d (total %d)", base, runtime.NumGoroutine())
+
+	// The server never replies, so every probe must still complete on write.
+	time.Sleep(3 * time.Second)
+	after := parked()
+	t.Logf("probe goroutines parked after 3s: %d", after)
+
+	if after > base {
+		t.Errorf("LEAK: %d probe goroutine(s) parked in SendRequest after 3s; "+
+			"probes must not wait for a reply", after-base)
+	}
+}
+
+// startHungSSHServer accepts SSH connections but never answers global
+// requests, simulating a wedged server with a live TCP connection.
+func startHungSSHServer(tb testing.TB) (addr string, cleanup func()) {
+	priv, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
-		t.Skipf("SendRequest returned an error instead of ok=false; refusal path differs: %v", err)
+		tb.Fatal(err)
 	}
-	// err==nil && !ok is exactly the case keepaliveLoop now maps to a failure.
-	if errKeepaliveRejected == nil {
-		t.Error("errKeepaliveRejected sentinel missing")
+	signer, err := ssh.NewSignerFromKey(priv)
+	if err != nil {
+		tb.Fatal(err)
+	}
+	cfg := &ssh.ServerConfig{NoClientAuth: true}
+	cfg.AddHostKey(signer)
+
+	ln, err := net.Listen("tcp", "localhost:0")
+	if err != nil {
+		tb.Fatal(err)
+	}
+	var mu sync.Mutex
+	var conns []net.Conn
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func(c net.Conn) {
+				mu.Lock()
+				conns = append(conns, c)
+				mu.Unlock()
+				_, _, reqs, err := ssh.NewServerConn(c, cfg)
+				if err != nil {
+					return
+				}
+				// Deliberately never answer.
+				go func() {
+					for range reqs {
+					}
+				}()
+			}(c)
+		}
+	}()
+	return ln.Addr().String(), func() {
+		ln.Close()
+		mu.Lock()
+		for _, c := range conns {
+			c.Close()
+		}
+		mu.Unlock()
 	}
 }

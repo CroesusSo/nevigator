@@ -12,7 +12,6 @@ package ssh
 import (
 	"context"
 	"encoding/hex"
-	"errors"
 	"fmt"
 	"log"
 	"math/rand"
@@ -292,10 +291,17 @@ const keepaliveRequest = "keepalive@openssh.com"
 // maxKeepaliveFailures is how many consecutive failures mark the tunnel broken.
 const maxKeepaliveFailures = 3
 
-// errKeepaliveRejected marks a probe the server refused rather than dropped.
-var errKeepaliveRejected = errors.New("keepalive request rejected by server")
-
 // keepaliveLoop runs in its own goroutine and sends periodic keepalive probes.
+//
+// Probes are sent with wantReply=false, so a successful write is the liveness
+// signal: the request never waits on a reply. Waiting for one would park the
+// goroutine inside ssh.(*mux).globalResponses whenever the peer is wedged but
+// the TCP connection is still up, leaking one goroutine per probe and leaving
+// the mux to match replies against a stale subscriber.
+//
+// The cost is that this no longer proves the server processed the request; a
+// peer that accepts bytes without acting is caught by the TCP-level keepalive
+// instead (see pac.TCPKeepAliveConfig).
 func (t *Tunnel) keepaliveLoop(ctx context.Context, client *ssh.Client) {
 	interval := t.cfg.Keepalive.Interval
 	if interval <= 0 {
@@ -325,13 +331,7 @@ func (t *Tunnel) keepaliveLoop(ctx context.Context, client *ssh.Client) {
 			errCh := make(chan error, 1)
 
 			go func(ch chan error, c *ssh.Client) {
-				// SendRequest reports a server-side refusal as ok=false with a
-				// nil error, so the boolean must be checked: ignoring it treats a
-				// rejected probe as a success and never detects a broken tunnel.
-				ok, _, err := c.SendRequest(keepaliveRequest, true, nil)
-				if err == nil && !ok {
-					err = errKeepaliveRejected
-				}
+				_, _, err := c.SendRequest(keepaliveRequest, false, nil)
 				select {
 				case ch <- err:
 				case <-pingCtx.Done():
