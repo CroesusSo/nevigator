@@ -12,6 +12,7 @@ package ssh
 import (
 	"context"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"log"
 	"math/rand"
@@ -282,13 +283,38 @@ func (t *Tunnel) snapshot() (state string, remoteAddr string) {
 	return state, remoteAddr
 }
 
+// keepaliveRequest is the global request name OpenSSH recognises
+// (ClientAlive requests in sshd_config use the same name). Sending a name the
+// server does not recognise makes every probe time out, which would look like a
+// dead peer and tear the tunnel down.
+const keepaliveRequest = "keepalive@openssh.com"
+
+// maxKeepaliveFailures is how many consecutive failures mark the tunnel broken.
+const maxKeepaliveFailures = 3
+
+// errKeepaliveRejected marks a probe the server refused rather than dropped.
+var errKeepaliveRejected = errors.New("keepalive request rejected by server")
+
 // keepaliveLoop runs in its own goroutine and sends periodic keepalive probes.
 func (t *Tunnel) keepaliveLoop(ctx context.Context, client *ssh.Client) {
-	ticker := time.NewTicker(t.cfg.Keepalive.Interval)
+	interval := t.cfg.Keepalive.Interval
+	if interval <= 0 {
+		interval = 30 * time.Second
+	}
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
-	pingTimeout := 10 * time.Second
-	const maxFailures = 3
+	// Bound each probe by the ping interval so that N consecutive failures take
+	// roughly N*interval. A fixed timeout longer than the interval would make a
+	// hung peer dominate the detection time, so "3 failures" could take far
+	// longer than a user setting a short interval expects.
+	pingTimeout := interval
+	if pingTimeout > 10*time.Second {
+		pingTimeout = 10 * time.Second
+	}
+	if pingTimeout < time.Second {
+		pingTimeout = time.Second
+	}
 
 	for {
 		select {
@@ -299,7 +325,13 @@ func (t *Tunnel) keepaliveLoop(ctx context.Context, client *ssh.Client) {
 			errCh := make(chan error, 1)
 
 			go func(ch chan error, c *ssh.Client) {
-				_, _, err := c.SendRequest("keepalive@golang.org", true, nil)
+				// SendRequest reports a server-side refusal as ok=false with a
+				// nil error, so the boolean must be checked: ignoring it treats a
+				// rejected probe as a success and never detects a broken tunnel.
+				ok, _, err := c.SendRequest(keepaliveRequest, true, nil)
+				if err == nil && !ok {
+					err = errKeepaliveRejected
+				}
 				select {
 				case ch <- err:
 				case <-pingCtx.Done():
@@ -322,7 +354,7 @@ func (t *Tunnel) keepaliveLoop(ctx context.Context, client *ssh.Client) {
 				log.Printf("[SSH] Tunnel %s keepalive failed: %v", t.proxyID, err)
 				atomic.AddInt32(&t.keepaliveFailures, 1)
 				failures := atomic.LoadInt32(&t.keepaliveFailures)
-				if failures >= maxFailures {
+				if failures >= maxKeepaliveFailures {
 					log.Printf("[SSH] Tunnel %s keepalive failed %d times; closing connection", t.proxyID, failures)
 					old := t.client.Swap(nil)
 					if old != nil {
