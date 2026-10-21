@@ -1,5 +1,7 @@
 package socks5
 
+import "fmt"
+
 const (
 	Version = 0x05
 
@@ -26,6 +28,20 @@ const (
 	AuthNone         = 0x00
 	AuthUserPass     = 0x02
 	AuthNoAcceptable = 0xFF
+
+	// AuthUserPassVersion is the version byte of the RFC 1929 user/pass subprotocol.
+	AuthUserPassVersion = 0x01
+
+	// AuthSuccess is the status byte of a successful user/pass authentication.
+	AuthSuccess = 0x00
+)
+
+// Errors surfaced while exchanging SOCKS5 handshake messages.
+var (
+	ErrBadReplyVersion   = fmt.Errorf("invalid SOCKS5 reply version")
+	ErrUserPassTooLong   = fmt.Errorf("SOCKS5 username or password exceeds 255 bytes")
+	ErrNoAuthMethodFound = fmt.Errorf("no mutually supported authentication method")
+	ErrAuthVersion       = fmt.Errorf("invalid SOCKS5 user/pass subnegotiation version")
 )
 
 // Auth holds credentials for SOCKS5 username/password authentication.

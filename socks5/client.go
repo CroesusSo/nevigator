@@ -4,20 +4,31 @@ import (
 	"fmt"
 	"net"
 	"time"
+
+	"github.com/yourorg/proxy-pac/pac"
 )
 
 // DialWithAuth establishes a TCP connection to the SOCKS5 server and performs
 // the handshake, including optional username/password authentication.
 // On success, it returns the connected net.Conn ready for CONNECT request.
 func DialWithAuth(network, addr string, auth *Auth, timeout time.Duration) (net.Conn, error) {
+	return DialWithAuthKeepAlive(network, addr, auth, timeout, nil)
+}
+
+// DialWithAuthKeepAlive behaves like DialWithAuth but applies TCP keepalive
+// settings to the dialled connection. Pass a nil config for Go's defaults.
+func DialWithAuthKeepAlive(network, addr string, auth *Auth, timeout time.Duration, ka *pac.TCPKeepAliveConfig) (net.Conn, error) {
 	dialer := &net.Dialer{Timeout: timeout}
+	if ka != nil {
+		dialer = ka.Dialer(timeout)
+	}
 	conn, err := dialer.Dial(network, addr)
 	if err != nil {
 		return nil, fmt.Errorf("dial: %w", err)
 	}
 
 	// Build method list
-	methods := []byte{}
+	var methods []byte
 	if auth != nil && (auth.Username != "" || auth.Password != "") {
 		methods = []byte{AuthNone, AuthUserPass}
 	} else {

@@ -1,15 +1,16 @@
 package proxy
 
 import (
+	"crypto/subtle"
 	"crypto/tls"
 	"crypto/x509"
 	"errors"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"log"
 	"net"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -194,7 +195,7 @@ func (s *Server) loadTLSConfig(cfg *pac.TLSConfig) (*tls.Config, error) {
 
 // loadCAFile loads a PEM-encoded CA file and returns a cert pool.
 func loadCAFile(path string) (*x509.CertPool, error) {
-	pemData, err := ioutil.ReadFile(path)
+	pemData, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
 	}
@@ -320,6 +321,10 @@ func (s *Server) handleCONNECT(w http.ResponseWriter, r *http.Request, host stri
 		return
 	}
 
+	// Same rationale as handleSOCKS5: an opaque tunnel can only be kept warm at
+	// the TCP layer.
+	pac.ApplyKeepAlive(clientConn, s.cfg.TCPKeepAlive)
+
 	// Determine protocol based on whether client connection is TLS
 	protocol := "http"
 	if _, isTLS := clientConn.(*tls.Conn); isTLS {
@@ -360,6 +365,7 @@ func (s *Server) handleHTTPSConnect(w http.ResponseWriter, r *http.Request, host
 
 	// The connection is already a TLS connection from the HTTPS server's listener.
 	// Inspect TLS state for SNI.
+	pac.ApplyKeepAlive(clientConn, s.cfg.TCPKeepAlive)
 	sni := ""
 	if tlsConn, ok := clientConn.(*tls.Conn); ok {
 		if state := tlsConn.ConnectionState(); state.ServerName != "" {
@@ -425,9 +431,91 @@ func (s *Server) listenSOCKS5() {
 	}
 }
 
+// socks5HandshakeTimeout bounds how long a SOCKS5 client may take to complete
+// the greeting, authentication and CONNECT request.
+func (s *Server) socks5HandshakeTimeout() time.Duration {
+	if s.cfg.SOCKS5HandshakeTimeout > 0 {
+		return s.cfg.SOCKS5HandshakeTimeout
+	}
+	return 10 * time.Second
+}
+
+// chooseAuthMethod picks the authentication method to use from the client's
+// offered list. When credentials are configured, user/pass is required and
+// no-auth is refused so the listener is not an open proxy.
+func (s *Server) chooseAuthMethod(offered []byte) (byte, error) {
+	hasNone, hasUserPass := false, false
+	for _, m := range offered {
+		switch m {
+		case socks5.AuthNone:
+			hasNone = true
+		case socks5.AuthUserPass:
+			hasUserPass = true
+		}
+	}
+
+	auth := s.cfg.SOCKS5Auth
+	authRequired := auth != nil && (auth.Username != "" || auth.Password != "")
+
+	if authRequired {
+		if !hasUserPass {
+			return 0, socks5.ErrNoAuthMethodFound
+		}
+		return socks5.AuthUserPass, nil
+	}
+	if hasNone {
+		return socks5.AuthNone, nil
+	}
+	return 0, socks5.ErrNoAuthMethodFound
+}
+
+// authenticateUserPass runs the RFC 1929 username/password subnegotiation.
+func (s *Server) authenticateUserPass(conn net.Conn) error {
+	head := make([]byte, 2)
+	if err := socks5.ReadFull(conn, head); err != nil {
+		return fmt.Errorf("read auth header: %w", err)
+	}
+	if head[0] != socks5.AuthUserPassVersion {
+		return socks5.ErrAuthVersion
+	}
+
+	user := make([]byte, head[1])
+	if err := socks5.ReadFull(conn, user); err != nil {
+		return fmt.Errorf("read username: %w", err)
+	}
+	plen := make([]byte, 1)
+	if err := socks5.ReadFull(conn, plen); err != nil {
+		return fmt.Errorf("read password length: %w", err)
+	}
+	pass := make([]byte, plen[0])
+	if err := socks5.ReadFull(conn, pass); err != nil {
+		return fmt.Errorf("read password: %w", err)
+	}
+
+	auth := s.cfg.SOCKS5Auth
+	ok := auth != nil &&
+		subtle.ConstantTimeCompare(user, []byte(auth.Username)) == 1 &&
+		subtle.ConstantTimeCompare(pass, []byte(auth.Password)) == 1
+	if !ok {
+		conn.Write([]byte{socks5.AuthUserPassVersion, 0x01}) // non-zero status = failure
+		return fmt.Errorf("invalid credentials")
+	}
+	conn.Write([]byte{socks5.AuthUserPassVersion, socks5.AuthSuccess})
+	return nil
+}
+
 // handleSOCKS5 processes a SOCKS5 client connection.
 func (s *Server) handleSOCKS5(conn net.Conn) {
 	defer conn.Close()
+
+	// Inbound tunnels are long-lived and opaque, so there is no protocol-level
+	// way to keep them warm: TCP keepalive is the only mechanism available.
+	pac.ApplyKeepAlive(conn, s.cfg.TCPKeepAlive)
+
+	// Bound the handshake so a silent client cannot pin this goroutine forever.
+	// It must be cleared BEFORE relaying, otherwise established tunnels die
+	// when the handshake deadline expires.
+	conn.SetDeadline(time.Now().Add(s.socks5HandshakeTimeout()))
 
 	// Read greeting: VER, NMETHODS, METHODS[nmethods]
 	buf := make([]byte, 258) // max greeting: 2 + 256 methods
@@ -442,17 +530,20 @@ func (s *Server) handleSOCKS5(conn net.Conn) {
 		return
 	}
 
-	// Choose no-auth if available
-	var chosen byte = socks5.AuthNoAcceptable
-	for _, m := range buf[:nmethods] {
-		if m == socks5.AuthNone {
-			chosen = socks5.AuthNone
-			break
-		}
-	}
-	conn.Write([]byte{socks5.Version, chosen})
-	if chosen != socks5.AuthNone {
+	chosen, err := s.chooseAuthMethod(buf[:nmethods])
+	if err != nil {
+		conn.Write([]byte{socks5.Version, socks5.AuthNoAcceptable})
+		log.Printf("SOCKS5 auth negotiation failed for %s: %v", conn.RemoteAddr(), err)
 		return
+	}
+	if _, err := conn.Write([]byte{socks5.Version, chosen}); err != nil {
+		return
+	}
+	if chosen == socks5.AuthUserPass {
+		if err := s.authenticateUserPass(conn); err != nil {
+			log.Printf("SOCKS5 authentication failed for %s: %v", conn.RemoteAddr(), err)
+			return
+		}
 	}
 
 	// Read request: VER, CMD, RSV, ATYP, ADDR, PORT
@@ -510,6 +601,9 @@ func (s *Server) handleSOCKS5(conn net.Conn) {
 
 	// Success
 	conn.Write(socks5.EncodeReply(socks5.REPSuccess))
+
+	// Handshake complete: drop the deadline so the tunnel is not cut off.
+	conn.SetDeadline(time.Time{})
 
 	connID := s.trackConnection(conn.RemoteAddr().String(), dest, route.Strategy, "socks5")
 	s.relay(connID, conn, outbound)

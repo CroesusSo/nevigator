@@ -130,8 +130,8 @@ func TestDefaultProxyParsing(t *testing.T) {
 	}
 }
 
-// TestRouterFallback tests that failed SOCKS5 route falls back to DIRECT.
-func TestRouterFallback(t *testing.T) {
+// TestRouterNoFallback tests that failed SOCKS5 route retries but does NOT fall back to DIRECT.
+func TestRouterNoFallback(t *testing.T) {
 	routerCfg := pac.RouterConfig{
 		DialTimeout: 50 * time.Millisecond,
 	}
@@ -140,15 +140,12 @@ func TestRouterFallback(t *testing.T) {
 		t.Fatalf("NewRouter: %v", err)
 	}
 	dest := "8.8.8.8:53"
-	// Use invalid SOCKS5 address to force failure, then verify fallback to DIRECT works
+	// Use invalid SOCKS5 address - should fail after retries, NOT fallback to DIRECT
 	route := pac.Route{Strategy: "SOCKS5", Address: "192.0.2.1:1080"}
-	conn, err := r.Route(dest, route)
-	if err != nil {
-		t.Logf("Router fallback resulted in error (no network?): %v", err)
-		return
+	_, err = r.Route(dest, route)
+	if err == nil {
+		t.Error("expected error for invalid SOCKS5 route, got nil")
 	}
-	conn.Close()
-	// If we got here, fallback to DIRECT succeeded
 }
 
 // TestHotReload tests PAC file hot reload.

@@ -24,15 +24,18 @@ import (
 
 type Config struct {
 	Proxy struct {
-		HTTPListen           string              `yaml:"http_listen"`
-		SOCKS5Listen         string              `yaml:"socks5_listen"`
-		AdminListen          string              `yaml:"admin_listen"`
-		HTTPSListen          string              `yaml:"https_listen"`
-		PACPath              string              `yaml:"pac_path"`
-		TUNDevice            string              `yaml:"tun_device"`
-		DefaultExternalProxy string              `yaml:"default_external_proxy"`
-		ExternalProxies      []pac.ExternalProxy `yaml:"external_proxies"`
-		TLS                  pac.TLSConfig       `yaml:"tls"`
+		HTTPListen             string                 `yaml:"http_listen"`
+		SOCKS5Listen           string                 `yaml:"socks5_listen"`
+		AdminListen            string                 `yaml:"admin_listen"`
+		HTTPSListen            string                 `yaml:"https_listen"`
+		PACPath                string                 `yaml:"pac_path"`
+		TUNDevice              string                 `yaml:"tun_device"`
+		DefaultExternalProxy   string                 `yaml:"default_external_proxy"`
+		ExternalProxies        []pac.ExternalProxy    `yaml:"external_proxies"`
+		SOCKS5Auth             *pac.SOCKS5AuthConfig  `yaml:"socks5_auth"`
+		SOCKS5HandshakeTimeout time.Duration          `yaml:"socks5_handshake_timeout"`
+		TCPKeepAlive           pac.TCPKeepAliveConfig `yaml:"tcp_keepalive"`
+		TLS                    pac.TLSConfig          `yaml:"tls"`
 	} `yaml:"proxy"`
 	PAC struct {
 		LocalIP        string        `yaml:"local_ip"`
@@ -265,7 +268,8 @@ func main() {
 
 	// Create router
 	routerCfg := pac.RouterConfig{
-		DialTimeout: 30 * time.Second,
+		DialTimeout:  30 * time.Second,
+		TCPKeepAlive: cfg.Proxy.TCPKeepAlive,
 	}
 	router, err := router.NewRouter(routerCfg)
 	if err != nil {
@@ -290,12 +294,15 @@ func main() {
 
 	// Create and start proxy server
 	proxyCfg := pac.ProxyConfig{
-		HTTPListen:   cfg.Proxy.HTTPListen,
-		SOCKS5Listen: cfg.Proxy.SOCKS5Listen,
-		AdminListen:  cfg.Proxy.AdminListen,
-		HTTPSListen:  cfg.Proxy.HTTPSListen,
-		PACPath:      cfg.Proxy.PACPath,
-		TLSConfig:    cfg.Proxy.TLS,
+		HTTPListen:             cfg.Proxy.HTTPListen,
+		SOCKS5Listen:           cfg.Proxy.SOCKS5Listen,
+		AdminListen:            cfg.Proxy.AdminListen,
+		HTTPSListen:            cfg.Proxy.HTTPSListen,
+		PACPath:                cfg.Proxy.PACPath,
+		SOCKS5Auth:             cfg.Proxy.SOCKS5Auth,
+		SOCKS5HandshakeTimeout: cfg.Proxy.SOCKS5HandshakeTimeout,
+		TCPKeepAlive:           cfg.Proxy.TCPKeepAlive,
+		TLSConfig:              cfg.Proxy.TLS,
 	}
 	proxySrv := proxy.NewServer(proxyCfg, evaluator, router)
 

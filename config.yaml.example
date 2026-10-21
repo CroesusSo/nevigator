@@ -6,6 +6,24 @@ proxy:
   # tun_device: removed - TUN routing no longer supported
   default_external_proxy: ""
   external_proxies: []
+  # Inbound SOCKS5 authentication. When username/password are set, clients must
+  # authenticate (RFC 1929) and no-auth is refused. Omit for open no-auth access.
+  # socks5_auth:
+  #   username: "user"
+  #   password: "pass"
+  # Bounds greeting + auth + CONNECT handling so idle clients cannot pin a
+  # goroutine. Defaults to 10s when unset.
+  # socks5_handshake_timeout: 10s
+  # TCP keepalive probes on accepted client connections and outbound dials.
+  # Idle/Interval/Count default to 30s/10s/3 (~1m to detect a dead peer) when
+  # enabled but unset. Detection takes roughly idle + interval*count.
+  # Disabled by default; the relay path is an opaque tunnel, so this is the only
+  # way to keep idle client connections warm.
+  # tcp_keepalive:
+  #   enabled: true
+  #   idle: 30s
+  #   interval: 10s
+  #   count: 3
   tls:
     certificate_file: ""
     key_file: ""
@@ -42,7 +60,10 @@ gfw:
   http_timeout: 60s
   custom_dns_servers: []
 
-# Example external proxy configurations (uncomment and customize):
+# Example external proxy configurations (uncomment and customize).
+# The SSH keepalive block drives keepalive@openssh.com requests; its optional
+# tcp sub-block tunes socket-level probes independently. Omit tcp to keep the
+# previous 30s idle default.
 # external_proxies:
 #   - id: "ssh-us"
 #     kind: "ssh"
@@ -52,6 +73,11 @@ gfw:
 #     keepalive:
 #       enabled: true
 #       interval: 30s
+#       tcp:
+#         enabled: true
+#         idle: 30s
+#         interval: 10s
+#         count: 3
 #   - id: "socks5-tw"
 #     kind: "socks5"
 #     address: "socks5.example.com:1080"

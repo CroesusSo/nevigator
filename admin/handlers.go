@@ -133,7 +133,15 @@ type FullConfig struct {
 		PACPath              string              `yaml:"pac_path" json:"pac_path"`
 		DefaultExternalProxy string              `yaml:"default_external_proxy" json:"default_external_proxy"`
 		ExternalProxies      []pac.ExternalProxy `yaml:"external_proxies" json:"external_proxies"`
-		TLS                  pac.TLSConfig       `yaml:"tls" json:"tls"` // TLS configuration for HTTPS proxy (certificate, key, CA, client auth)
+
+		// These must stay in sync with pac.ProxyConfig. FullConfig is marshalled
+		// back to disk on every admin write, so any key missing here is
+		// silently deleted from the user's config file.
+		SOCKS5Auth             *pac.SOCKS5AuthConfig  `yaml:"socks5_auth,omitempty" json:"socks5_auth,omitempty"`
+		SOCKS5HandshakeTimeout time.Duration          `yaml:"socks5_handshake_timeout,omitempty" json:"socks5_handshake_timeout,omitempty"`
+		TCPKeepAlive           pac.TCPKeepAliveConfig `yaml:"tcp_keepalive,omitempty" json:"tcp_keepalive,omitempty"`
+
+		TLS pac.TLSConfig `yaml:"tls" json:"tls"` // TLS configuration for HTTPS proxy (certificate, key, CA, client auth)
 	} `yaml:"proxy"`
 	PAC struct {
 		LocalIP        string        `yaml:"local_ip" json:"local_ip"`
@@ -1421,6 +1429,19 @@ func (h *Handler) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 			CAFile          string `json:"ca_file"`
 			ClientAuth      string `json:"client_auth"`
 		} `json:"tls"`
+		// Inbound SOCKS5 auth and handshake limits. Reported read-only: the
+		// password is never returned, and these are edited via config.yaml.
+		SOCKS5Auth struct {
+			Username  string `json:"username"`
+			HasPasswd bool   `json:"has_password"`
+		} `json:"socks5_auth"`
+		SOCKS5HandshakeTimeout string `json:"socks5_handshake_timeout"`
+		TCPKeepAlive           struct {
+			Enabled  bool   `json:"enabled"`
+			Idle     string `json:"idle"`
+			Interval string `json:"interval"`
+			Count    int    `json:"count"`
+		} `json:"tcp_keepalive"`
 	}{
 		HTTPListen:   status.HTTPListen,
 		SOCKS5Listen: status.SOCKS5Listen,
@@ -1446,6 +1467,24 @@ func (h *Handler) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 		cfg.TLS.KeyFile = full.Proxy.TLS.KeyFile
 		cfg.TLS.CAFile = full.Proxy.TLS.CAFile
 		cfg.TLS.ClientAuth = full.Proxy.TLS.ClientAuth
+		if a := full.Proxy.SOCKS5Auth; a != nil {
+			cfg.SOCKS5Auth.Username = a.Username
+			cfg.SOCKS5Auth.HasPasswd = a.Password != ""
+		}
+		if full.Proxy.SOCKS5HandshakeTimeout > 0 {
+			cfg.SOCKS5HandshakeTimeout = full.Proxy.SOCKS5HandshakeTimeout.String()
+		}
+		if ka := full.Proxy.TCPKeepAlive; ka.Enabled {
+			cfg.TCPKeepAlive.Enabled = true
+			cfg.TCPKeepAlive.Count = ka.Count
+			// Report effective values, including defaults applied at runtime.
+			_, idle, interval, count := ka.KeepAlive()
+			cfg.TCPKeepAlive.Idle = idle.String()
+			cfg.TCPKeepAlive.Interval = interval.String()
+			if cfg.TCPKeepAlive.Count == 0 {
+				cfg.TCPKeepAlive.Count = count
+			}
+		}
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(cfg)

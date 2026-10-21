@@ -50,6 +50,12 @@ type TLSConfig struct {
 type KeepaliveConfig struct {
 	Enabled  bool          `yaml:"enabled" json:"enabled"`   // Whether keepalive is enabled
 	Interval time.Duration `yaml:"interval" json:"interval"` // How often to send keepalive probes (e.g., "30s")
+
+	// TCP tunes the underlying socket's keepalive probes. This complements
+	// Enabled/Interval: the SSH request proves end-to-end liveness, while TCP
+	// probes detect a dead transport. Independent of Enabled. A pointer keeps it
+	// out of the admin API payload unless explicitly configured.
+	TCP *TCPKeepAliveConfig `yaml:"tcp,omitempty" json:"tcp,omitempty"`
 }
 
 func (k *KeepaliveConfig) UnmarshalYAML(value *yaml.Node) error {
@@ -166,8 +172,45 @@ type EvaluatorConfig struct {
 
 // RouterConfig holds configuration for the Router.
 type RouterConfig struct {
-	DialTimeout     time.Duration   // Timeout for establishing outbound connections
-	ExternalProxies []ExternalProxy // Registry of upstream SOCKS5 proxies (injected, not from YAML directly)
+	DialTimeout     time.Duration      // Timeout for establishing outbound connections
+	ExternalProxies []ExternalProxy    // Registry of upstream SOCKS5 proxies (injected, not from YAML directly)
+	TCPKeepAlive    TCPKeepAliveConfig // Applied to outbound connections
+}
+
+// TCPKeepAliveConfig configures TCP keepalive probes on a connection.
+//
+// Idle is the silent period before the first probe, Interval is the gap between
+// probes, and Count is how many unanswered probes are tolerated before the
+// connection is dropped. Dead-peer detection therefore takes roughly
+// Idle + Interval*Count.
+//
+// This is distinct from KeepaliveConfig, which drives the SSH-level
+// keepalive@openssh.com request.
+type TCPKeepAliveConfig struct {
+	Enabled  bool          `yaml:"enabled"`
+	Idle     time.Duration `yaml:"idle"`
+	Interval time.Duration `yaml:"interval"`
+	Count    int           `yaml:"count"`
+}
+
+// KeepAlive returns the probe parameters to apply, defaulting Idle/Interval
+// to 30s and Count to 3 when unset, giving ~1m detection. A zero-value config
+// returns Enable=false so callers can skip the syscall entirely.
+func (k TCPKeepAliveConfig) KeepAlive() (enabled bool, idle, interval time.Duration, count int) {
+	if !k.Enabled {
+		return false, 0, 0, 0
+	}
+	idle, interval, count = k.Idle, k.Interval, k.Count
+	if idle <= 0 {
+		idle = 30 * time.Second
+	}
+	if interval <= 0 {
+		interval = 10 * time.Second
+	}
+	if count <= 0 {
+		count = 3
+	}
+	return true, idle, interval, count
 }
 
 // ProxyConfig holds the overall proxy server configuration.
@@ -178,6 +221,23 @@ type ProxyConfig struct {
 	HTTPSListen  string // Optional TLS-wrapped HTTP proxy
 	PACPath      string
 
+	// SOCKS5Auth, when set, requires clients to authenticate with
+	// username/password (RFC 1929) instead of allowing no-auth.
+	SOCKS5Auth *SOCKS5AuthConfig
+
+	// SOCKS5HandshakeTimeout bounds greeting + auth + CONNECT handling.
+	// Zero uses the server default.
+	SOCKS5HandshakeTimeout time.Duration
+
+	// TCPKeepAlive configures probes on accepted client connections.
+	TCPKeepAlive TCPKeepAliveConfig
+
 	// TLS configuration for HTTPS proxy support
 	TLSConfig TLSConfig `yaml:"tls"`
+}
+
+// SOCKS5AuthConfig holds credentials required from inbound SOCKS5 clients.
+type SOCKS5AuthConfig struct {
+	Username string `yaml:"username"`
+	Password string `yaml:"password"`
 }

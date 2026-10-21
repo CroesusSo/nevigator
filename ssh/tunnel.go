@@ -287,43 +287,36 @@ func (t *Tunnel) keepaliveLoop(ctx context.Context, client *ssh.Client) {
 	ticker := time.NewTicker(t.cfg.Keepalive.Interval)
 	defer ticker.Stop()
 
-	// Ping timeout: 5 seconds
-	pingTimeout := 5 * time.Second
-	// Max consecutive failures before reconnect
+	pingTimeout := 10 * time.Second
 	const maxFailures = 3
-	// Reusable errCh to avoid per-ping allocation
-	errCh := make(chan error, 1)
 
 	for {
-		// Drain any pending errCh from previous iteration to avoid deadlock
-		select {
-		case <-errCh:
-		default:
-		}
-
 		select {
 		case <-ctx.Done():
-			// Stop requested
 			return
 		case <-ticker.C:
-			// Create child context for this ping with timeout
 			pingCtx, cancel := context.WithTimeout(ctx, pingTimeout)
+			errCh := make(chan error, 1)
 
-			// Launch goroutine to send keepalive (this may block)
-			go func() {
-				_, _, err := client.SendRequest("keepalive@golang.org", true, nil)
-				errCh <- err
-			}()
+			go func(ch chan error, c *ssh.Client) {
+				_, _, err := c.SendRequest("keepalive@golang.org", true, nil)
+				select {
+				case ch <- err:
+				case <-pingCtx.Done():
+				}
+			}(errCh, client)
 
 			var err error
 			select {
 			case err = <-errCh:
-				// Keepalive response received (success or error)
 			case <-pingCtx.Done():
-				// Ping timed out
 				err = pingCtx.Err()
 			}
-			cancel() // Clean up child context
+			cancel()
+
+			if client != t.client.Load() {
+				continue
+			}
 
 			if err != nil {
 				log.Printf("[SSH] Tunnel %s keepalive failed: %v", t.proxyID, err)
@@ -331,18 +324,15 @@ func (t *Tunnel) keepaliveLoop(ctx context.Context, client *ssh.Client) {
 				failures := atomic.LoadInt32(&t.keepaliveFailures)
 				if failures >= maxFailures {
 					log.Printf("[SSH] Tunnel %s keepalive failed %d times; closing connection", t.proxyID, failures)
-					// Mark tunnel as broken: swap client to nil, close old, signal manager
 					old := t.client.Swap(nil)
 					if old != nil {
 						old.Close()
 					}
-					// Retry send to failCh with loop to handle contention
 					for sent := false; !sent; {
 						select {
 						case t.failCh <- struct{}{}:
 							sent = true
 						default:
-							// Buffer full, drop oldest signal and retry
 							select {
 							case <-t.failCh:
 							case t.failCh <- struct{}{}:
@@ -353,7 +343,6 @@ func (t *Tunnel) keepaliveLoop(ctx context.Context, client *ssh.Client) {
 					return
 				}
 			} else {
-				// Success: reset failure counter
 				atomic.StoreInt32(&t.keepaliveFailures, 0)
 			}
 		}
@@ -436,35 +425,9 @@ func (t *Tunnel) worker() {
 			// Perform the dial
 			conn, err := client.Dial("tcp", task.dest)
 			if err != nil {
-				// Mark tunnel as broken: swap client to nil and close old
-				old := t.client.Swap(nil)
-				if old != nil {
-					old.Close()
-				}
-				// Signal manager to reconnect (non-blocking with retry loop and timeout)
-				for sent := false; !sent; {
-					select {
-					case t.failCh <- struct{}{}:
-						sent = true
-					case <-time.After(100 * time.Millisecond):
-						// Timeout: drop signal if can't send within reasonable time
-						sent = true
-					default:
-						// Buffer full, drop oldest signal and retry
-						select {
-						case <-t.failCh:
-						case t.failCh <- struct{}{}:
-							sent = true
-						case <-time.After(100 * time.Millisecond):
-							sent = true
-						}
-					}
-				}
-				// Check if caller already timed out/cancelled
 				select {
 				case task.respChan <- dialResult{err: err}:
 				case <-task.ctx.Done():
-					// Caller timed out, skip result
 				}
 				continue
 			}
@@ -635,10 +598,11 @@ func dialSSH(cfg pac.ExternalProxy) (*ssh.Client, error) {
 	addr := net.JoinHostPort(host, strconv.Itoa(port))
 
 	// Use custom dialer with TCP keepalive
-	dialer := &net.Dialer{
-		Timeout:   sshCfg.Timeout,
-		KeepAlive: 30 * time.Second,
+	ka := pac.TCPKeepAliveConfig{Enabled: true, Idle: 30 * time.Second}
+	if cfg.Keepalive.TCP != nil {
+		ka = *cfg.Keepalive.TCP
 	}
+	dialer := ka.Dialer(sshCfg.Timeout)
 	conn, err := dialer.Dial("tcp", addr)
 	if err != nil {
 		return nil, fmt.Errorf("tcp dial failed: %w", err)

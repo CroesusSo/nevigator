@@ -4,11 +4,15 @@ import (
 	"bytes"
 	"errors"
 	"net"
+	"strings"
 	"testing"
 )
 
 func TestSerializeAddrIPv4(t *testing.T) {
-	got := SerializeAddr("192.168.1.1", 443)
+	got, err := SerializeAddr("192.168.1.1", 443)
+	if err != nil {
+		t.Fatalf("SerializeAddr: %v", err)
+	}
 	want := []byte{0x01, 0xC0, 0xA8, 0x01, 0x01, 0x01, 0xBB}
 	if !bytes.Equal(got, want) {
 		t.Errorf("SerializeAddr(192.168.1.1, 443) = %v, want %v", got, want)
@@ -16,7 +20,10 @@ func TestSerializeAddrIPv4(t *testing.T) {
 }
 
 func TestSerializeAddrDomain(t *testing.T) {
-	got := SerializeAddr("example.com", 80)
+	got, err := SerializeAddr("example.com", 80)
+	if err != nil {
+		t.Fatalf("SerializeAddr: %v", err)
+	}
 	want := []byte{0x03, 0x0B, 'e', 'x', 'a', 'm', 'p', 'l', 'e', '.', 'c', 'o', 'm', 0x00, 0x50}
 	if !bytes.Equal(got, want) {
 		t.Errorf("SerializeAddr(example.com, 80) = %v, want %v", got, want)
@@ -24,7 +31,10 @@ func TestSerializeAddrDomain(t *testing.T) {
 }
 
 func TestSerializeAddrIPv6(t *testing.T) {
-	got := SerializeAddr("::1", 8080)
+	got, err := SerializeAddr("::1", 8080)
+	if err != nil {
+		t.Fatalf("SerializeAddr: %v", err)
+	}
 	if got[0] != ATYPIPv6 {
 		t.Errorf("expected ATYP IPv6 (0x04), got 0x%02x", got[0])
 	}
@@ -104,7 +114,10 @@ func TestDeserializeAddrRoundTrip(t *testing.T) {
 		{"::1", 22},
 	}
 	for _, tt := range tests {
-		serialized := SerializeAddr(tt.host, tt.port)
+		serialized, err := SerializeAddr(tt.host, tt.port)
+		if err != nil {
+			t.Fatalf("SerializeAddr(%s, %d): %v", tt.host, tt.port, err)
+		}
 		host, port, _, err := DeserializeAddr(serialized, 0)
 		if err != nil {
 			t.Fatalf("DeserializeAddr failed for %s:%d: %v", tt.host, tt.port, err)
@@ -122,6 +135,41 @@ func TestDeserializeAddrRoundTrip(t *testing.T) {
 		if port != tt.port {
 			t.Errorf("round-trip port mismatch: %d -> %d", tt.port, port)
 		}
+	}
+}
+
+func TestSerializeAddrDomainTooLong(t *testing.T) {
+	long := strings.Repeat("a", 300)
+	_, err := SerializeAddr(long, 80)
+	if err == nil {
+		t.Fatal("expected error for domain longer than 255 bytes")
+	}
+	if !errors.Is(err, ErrDomainTooLong) {
+		t.Errorf("expected ErrDomainTooLong, got: %v", err)
+	}
+}
+
+func TestSerializeAddrDomainAtLimit(t *testing.T) {
+	max := strings.Repeat("a", 255)
+	got, err := SerializeAddr(max, 80)
+	if err != nil {
+		t.Fatalf("255-byte domain should encode: %v", err)
+	}
+	if int(got[1]) != 255 {
+		t.Errorf("length byte = %d, want 255", got[1])
+	}
+	host, _, _, err := DeserializeAddr(got, 0)
+	if err != nil {
+		t.Fatalf("DeserializeAddr: %v", err)
+	}
+	if host != max {
+		t.Errorf("round-trip domain length = %d, want 255", len(host))
+	}
+}
+
+func TestSerializeAddrEmptyDomain(t *testing.T) {
+	if _, err := SerializeAddr("", 80); err == nil {
+		t.Error("expected error for empty domain")
 	}
 }
 

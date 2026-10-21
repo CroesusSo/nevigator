@@ -101,29 +101,58 @@ func (r *Router) GetTunnelManager() TunnelManager {
 }
 
 // Route establishes an outbound connection according to the given route.
-// If the route fails (and is not DIRECT), it automatically retries with DIRECT.
+// If a non-DIRECT route fails, it retries once via DIRECT.
 func (r *Router) Route(dest string, route pac.Route) (net.Conn, error) {
 	conn, err := r.dialWithRoute(dest, route)
-	if err != nil && route.Strategy != "DIRECT" {
-		log.Printf("Route %s failed: %v; falling back to DIRECT", route.Strategy, err)
-		conn, err = r.dialWithRoute(dest, pac.Route{Strategy: "DIRECT"})
+	if err == nil {
+		return conn, nil
 	}
-	return conn, err
+	// A DIRECT route has no fallback, and deterministic config errors will not
+	// be fixed by retrying.
+	if route.Strategy == "DIRECT" || isDeterministic(err) {
+		return nil, err
+	}
+
+	log.Printf("Route %s via %s failed (%v), falling back to DIRECT", dest, route.Strategy, err)
+	fallbackConn, fallbackErr := r.dialDirect(dest)
+	if fallbackErr != nil {
+		return nil, fmt.Errorf("%w (direct fallback: %v)", err, fallbackErr)
+	}
+	return fallbackConn, nil
+}
+
+// dialDirect establishes a DIRECT connection with the configured dial timeout.
+func (r *Router) dialDirect(dest string) (net.Conn, error) {
+	return r.cfg.TCPKeepAlive.Dialer(r.dialTimeout).Dial("tcp", dest)
+}
+
+// isDeterministic reports whether err reflects a configuration or protocol
+// problem that will repeat identically on every attempt.
+func isDeterministic(err error) bool {
+	switch {
+	case errors.Is(err, ErrUnknownStrategy),
+		errors.Is(err, ErrInvalidSOCKS5Address),
+		errors.Is(err, socks5.ErrDomainTooLong),
+		errors.Is(err, socks5.ErrEmptyDomain):
+		return true
+	}
+	// Any non-nil SOCKS5 reply code means the upstream answered and refused.
+	for code := range socks5Errors {
+		if errors.Is(err, socks5Errors[code]) {
+			return true
+		}
+	}
+	return false
 }
 
 // dialWithRoute dials the destination using the specified route.
 func (r *Router) dialWithRoute(dest string, route pac.Route) (net.Conn, error) {
-	dialer := &net.Dialer{
-		Timeout:   r.dialTimeout,
-		LocalAddr: nil,
-	}
-
 	switch route.Strategy {
 	case "SOCKS5":
 		if route.Address == "" {
 			return nil, ErrInvalidSOCKS5Address
 		}
-		return r.dialSOCKS5WithAuth(dest, route.Address, dialer, nil)
+		return r.dialSOCKS5WithAuth(dest, route.Address, nil)
 	case "EXTERNAL":
 		if route.ExternalID == "" {
 			return nil, ErrInvalidSOCKS5Address
@@ -143,7 +172,7 @@ func (r *Router) dialWithRoute(dest string, route pac.Route) (net.Conn, error) {
 			return r.tunnelMgr.Dial(proxy.ID, dest, r.dialTimeout)
 		default: // "socks5" (default)
 			auth := &socks5.Auth{Username: proxy.Username, Password: proxy.Password}
-			return r.dialSOCKS5WithAuth(dest, proxy.Address, dialer, auth)
+			return r.dialSOCKS5WithAuth(dest, proxy.Address, auth)
 		}
 	case "DEFAULT":
 		if route.ExternalID != "" {
@@ -170,19 +199,19 @@ func (r *Router) dialWithRoute(dest string, route pac.Route) (net.Conn, error) {
 			return r.tunnelMgr.Dial(proxy.ID, dest, r.dialTimeout)
 		default: // "socks5"
 			auth := &socks5.Auth{Username: proxy.Username, Password: proxy.Password}
-			return r.dialSOCKS5WithAuth(dest, proxy.Address, dialer, auth)
+			return r.dialSOCKS5WithAuth(dest, proxy.Address, auth)
 		}
 	case "DIRECT":
-		return dialer.Dial("tcp", dest)
+		return r.dialDirect(dest)
 	default:
 		return nil, ErrUnknownStrategy
 	}
 }
 
 // dialSOCKS5WithAuth establishes a connection through a SOCKS5 server with optional authentication.
-func (r *Router) dialSOCKS5WithAuth(destAddr, socksAddr string, dialer *net.Dialer, auth *socks5.Auth) (net.Conn, error) {
+func (r *Router) dialSOCKS5WithAuth(destAddr, socksAddr string, auth *socks5.Auth) (net.Conn, error) {
 	// Use socks5.DialWithAuth to handle TCP dial + SOCKS5 handshake
-	conn, err := socks5.DialWithAuth("tcp", socksAddr, auth, r.dialTimeout)
+	conn, err := socks5.DialWithAuthKeepAlive("tcp", socksAddr, auth, r.dialTimeout, &r.cfg.TCPKeepAlive)
 	if err != nil {
 		return nil, err
 	}
@@ -193,8 +222,16 @@ func (r *Router) dialSOCKS5WithAuth(destAddr, socksAddr string, dialer *net.Dial
 		conn.Close()
 		return nil, err
 	}
-	destPort, _ := net.LookupPort("tcp", destPortStr)
-	addrBytes := socks5.SerializeAddr(destHost, uint16(destPort))
+	destPort, err := net.LookupPort("tcp", destPortStr)
+	if err != nil {
+		conn.Close()
+		return nil, fmt.Errorf("resolve dest port: %w", err)
+	}
+	addrBytes, err := socks5.SerializeAddr(destHost, uint16(destPort))
+	if err != nil {
+		conn.Close()
+		return nil, fmt.Errorf("serialize dest %s: %w", destHost, err)
+	}
 	req := make([]byte, 3+len(addrBytes))
 	req[0] = socks5.Version
 	req[1] = socks5.CMDConnect
@@ -207,26 +244,23 @@ func (r *Router) dialSOCKS5WithAuth(destAddr, socksAddr string, dialer *net.Dial
 		return nil, err
 	}
 
-	// Read reply: VER, REP, RSV, ATYP, BND.ADDR, BND.PORT
-	resp := make([]byte, 10)
-	if err := socks5.ReadFull(conn, resp); err != nil {
+	// The reply is variable length: read the header, then consume BND.ADDR and
+	// BND.PORT according to ATYP so the stream is left at application data.
+	rep, err := socks5.ReadReply(conn)
+	if err != nil {
 		conn.Close()
+		if errors.Is(err, socks5.ErrBadReplyVersion) {
+			return nil, ErrSOCKS5InvalidVersion
+		}
 		return nil, err
 	}
-	if resp[0] != socks5.Version {
+	if rep != socks5.REPSuccess {
 		conn.Close()
-		return nil, ErrSOCKS5InvalidVersion
-	}
-	if resp[1] != socks5.REPSuccess {
-		conn.Close()
-		if err, ok := socks5Errors[resp[1]]; ok {
-			return nil, err
+		if e, ok := socks5Errors[rep]; ok {
+			return nil, e
 		}
 		return nil, ErrSOCKS5GeneralFailure
 	}
-
-	// BND.ADDR and BND.PORT are ignored as per SOCKS5 spec
-	// but we must consume them to leave the connection in clean state
 
 	return conn, nil
 }

@@ -1,4 +1,4 @@
-FROM golang:1.21-alpine AS builder
+FROM golang:1.23-alpine AS builder
 WORKDIR /app
 COPY go.mod go.sum ./
 RUN go mod download
@@ -12,4 +12,4 @@ COPY --from=builder /app/proxy-pac .
 COPY config.yaml.example /etc/proxy-pac.yaml
 # PAC file should be mounted or copied
 EXPOSE 8080 1080 9090
-CMD ["./proxy-pac", "--config", "/etc/proxy-pac.yaml"]
+CMD ["./proxy-pac", "-conf", "/etc/proxy-pac.yaml"]

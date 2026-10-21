@@ -648,34 +648,25 @@ func TestTunnelKeepaliveReconnect(t *testing.T) {
 	}
 }
 
-// TestTunnelWorkerTriggeredReconnect tests that when a worker detects a dial error
-// (simulating a broken connection), the tunnel marks itself broken and reconnects,
-// and subsequent Dial calls block during reconnection.
-func TestTunnelWorkerTriggeredReconnect(t *testing.T) {
+// TestTunnelWorkerDoesNotKillTunnel verifies that when a dial attempt completes
+// (success or failure), the worker does NOT kill the tunnel or trigger reconnection.
+// Only keepalive failures should trigger reconnection. Workers return the result
+// to the caller without affecting tunnel state.
+func TestTunnelWorkerDoesNotKillTunnel(t *testing.T) {
 	serverAddr, cleanup := startTestSSHServer(t)
 	defer cleanup()
 
 	orig := dialSSHVal.Load().(func(pac.ExternalProxy) (*ssh.Client, error))
 	defer dialSSHVal.Store(orig)
 
-	var dialCount int32
 	dialSSHVal.Store(func(cfg pac.ExternalProxy) (*ssh.Client, error) {
-		atomic.AddInt32(&dialCount, 1)
 		clientConfig := &ssh.ClientConfig{
 			User:            cfg.Username,
 			Auth:            []ssh.AuthMethod{},
 			HostKeyCallback: ssh.InsecureIgnoreHostKey(),
 			Timeout:         30 * time.Second,
 		}
-		client, err := ssh.Dial("tcp", serverAddr, clientConfig)
-		if err != nil {
-			return nil, err
-		}
-		// Slow down reconnection to give us time to observe blocking
-		if atomic.LoadInt32(&dialCount) == 2 {
-			time.Sleep(200 * time.Millisecond)
-		}
-		return client, nil
+		return ssh.Dial("tcp", serverAddr, clientConfig)
 	})
 
 	cfg := pac.ExternalProxy{
@@ -688,7 +679,6 @@ func TestTunnelWorkerTriggeredReconnect(t *testing.T) {
 	tunnel := NewTunnel(cfg)
 	defer tunnel.Close()
 
-	// Wait for initial connection
 	timeout := time.After(2 * time.Second)
 	for {
 		if tunnel.client.Load() != nil {
@@ -702,63 +692,22 @@ func TestTunnelWorkerTriggeredReconnect(t *testing.T) {
 		}
 	}
 
-	// Simulate connection loss by closing the client
-	client := tunnel.client.Load()
-	client.Close()
-
-	// First Dial after closure should return an error quickly
-	errCh1 := make(chan error, 1)
-	go func() {
-		conn, err := tunnel.Dial("example.com:80", 1*time.Second)
-		if conn != nil {
-			conn.Close()
-		}
-		errCh1 <- err
-	}()
-
-	select {
-	case err := <-errCh1:
-		if err == nil {
-			t.Fatalf("expected first Dial to fail, got nil")
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("first Dial timed out")
+	initialClient := tunnel.client.Load()
+	if initialClient == nil {
+		t.Fatal("initial client is nil")
 	}
 
-	// Second Dial should block (not return immediately) because client is nil and reconnection ongoing
-	done := make(chan struct{})
-	errCh2 := make(chan error, 1)
-	go func() {
-		defer close(done)
-		conn, err := tunnel.Dial("example.com:80", 3*time.Second)
-		if err == nil {
-			conn.Close()
-		}
-		errCh2 <- err
-	}()
-
-	// Check it's still pending after 100ms
-	time.Sleep(100 * time.Millisecond)
-	select {
-	case <-done:
-		t.Fatal("second Dial returned too quickly; should have blocked waiting for reconnect")
-	default:
-		// good
+	conn, _ := tunnel.Dial("example.com:80", 500*time.Millisecond)
+	if conn != nil {
+		conn.Close()
 	}
 
-	// Wait for second Dial to complete (after reconnection)
-	select {
-	case err := <-errCh2:
-		if err != nil {
-			t.Fatalf("second Dial failed after reconnection: %v", err)
-		}
-	case <-time.After(3 * time.Second):
-		t.Fatal("second Dial timed out")
+	currentClient := tunnel.client.Load()
+	if currentClient == nil {
+		t.Fatal("tunnel client is nil after dial - worker should not kill tunnel")
 	}
-
-	// Verify only one reconnection attempt (dialCount should be 2)
-	if atomic.LoadInt32(&dialCount) != 2 {
-		t.Errorf("expected exactly 2 dial attempts, got %d", dialCount)
+	if currentClient != initialClient {
+		t.Fatal("tunnel client changed after dial - worker should not trigger reconnection")
 	}
 }
 
@@ -785,10 +734,9 @@ func TestTunnelReconnectBackoff(t *testing.T) {
 	}
 }
 
-// TestTunnelParallelDialsDuringOutage verifies that when the connection drops
-// and reconnection is in progress, many concurrent Dial calls block rather than
-// fail, and all succeed after reconnection. Also ensures only one reconnection
-// attempt occurs.
+// TestTunnelParallelDialsDuringOutage verifies that when the connection drops,
+// workers do NOT trigger reconnection - only keepalive should.
+// Dials return errors while reconnection is in progress, and succeed after keepalive reconnects.
 func TestTunnelParallelDialsDuringOutage(t *testing.T) {
 	serverAddr, cleanup := startTestSSHServer(t)
 	defer cleanup()
@@ -809,8 +757,7 @@ func TestTunnelParallelDialsDuringOutage(t *testing.T) {
 		if err != nil {
 			return nil, err
 		}
-		// Slow down reconnection to ensure Dials block before it completes
-		if atomic.LoadInt32(&dialCount) == 2 {
+		if atomic.LoadInt32(&dialCount) >= 2 {
 			time.Sleep(200 * time.Millisecond)
 		}
 		return client, nil
@@ -822,11 +769,14 @@ func TestTunnelParallelDialsDuringOutage(t *testing.T) {
 		Address:    "host",
 		AuthMethod: "password",
 		Password:   "pass",
+		Keepalive: pac.KeepaliveConfig{
+			Enabled:  true,
+			Interval: 50 * time.Millisecond,
+		},
 	}
 	tunnel := NewTunnel(cfg)
 	defer tunnel.Close()
 
-	// Wait for initial connection
 	timeout := time.After(2 * time.Second)
 	for {
 		if tunnel.client.Load() != nil {
@@ -840,31 +790,11 @@ func TestTunnelParallelDialsDuringOutage(t *testing.T) {
 		}
 	}
 
-	// Simulate connection loss by closing the client
 	client := tunnel.client.Load()
 	client.Close()
 
-	// Launch first Dial that will fail (due to closed client) and trigger reconnection
-	errChFirst := make(chan error, 1)
-	go func() {
-		conn, err := tunnel.Dial("example.com:80", 1*time.Second)
-		if conn != nil {
-			conn.Close()
-		}
-		errChFirst <- err
-	}()
+	time.Sleep(200 * time.Millisecond)
 
-	// Wait for it to return error
-	select {
-	case err := <-errChFirst:
-		if err == nil {
-			t.Fatalf("expected first Dial to fail, got nil")
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("first Dial timed out")
-	}
-
-	// Immediately after, launch many concurrent Dials while reconnection is in progress
 	const num = 20
 	var wg sync.WaitGroup
 	wg.Add(num)
@@ -874,7 +804,7 @@ func TestTunnelParallelDialsDuringOutage(t *testing.T) {
 	for i := 0; i < num; i++ {
 		go func() {
 			defer wg.Done()
-			conn, err := tunnel.Dial("example.com:80", 3*time.Second)
+			conn, err := tunnel.Dial("example.com:80", 2*time.Second)
 			if err == nil {
 				conn.Close()
 				mu.Lock()
@@ -884,25 +814,17 @@ func TestTunnelParallelDialsDuringOutage(t *testing.T) {
 		}()
 	}
 
-	// Give some time for Dials to block; we expect none to complete immediately
-	time.Sleep(100 * time.Millisecond)
-	mu.Lock()
-	immediate := successes
-	mu.Unlock()
-	if immediate > 0 {
-		t.Logf("%d Dials succeeded immediately (expected all to block)", immediate)
-	}
-
 	wg.Wait()
 
 	mu.Lock()
-	if successes < num {
-		t.Errorf("only %d out of %d Dials succeeded", successes, num)
-	}
+	s := successes
 	mu.Unlock()
 
-	// Verify only one reconnection attempt (dialCount should be 2)
-	if atomic.LoadInt32(&dialCount) != 2 {
-		t.Errorf("expected exactly 2 dial attempts (initial + reconnect), got %d", dialCount)
+	if s == 0 {
+		t.Error("all Dials failed; keepalive should have reconnected tunnel by now")
+	}
+
+	if atomic.LoadInt32(&dialCount) < 2 {
+		t.Errorf("expected at least 2 dial attempts (initial + keepalive-reconnect), got %d", dialCount)
 	}
 }
