@@ -1008,17 +1008,17 @@ func applyKeepaliveTCP(dst *pac.TCPKeepAliveConfig, req *keepaliveTCPReq) error 
 // handleCreateProxy adds a new external proxy.
 func (h *Handler) handleCreateProxy(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		ID                 string `json:"id"`
-		Address            string `json:"address"`
-		Username           string `json:"username"`
-		Password           string `json:"password"`
-		Kind               string `json:"kind"`
-		SSHPort            int    `json:"ssh_port"`
-		AuthMethod         string `json:"auth_method"`
-		PrivateKeyPath     string `json:"private_key_path"`
-		HostKeyCheck       string `json:"host_key_check"`
-		HostKeyFingerprint string `json:"host_key_fingerprint"`
-		KeepaliveEnabled   *bool  `json:"keepalive_enabled"`
+		ID                 string           `json:"id"`
+		Address            string           `json:"address"`
+		Username           string           `json:"username"`
+		Password           string           `json:"password"`
+		Kind               string           `json:"kind"`
+		SSHPort            int              `json:"ssh_port"`
+		AuthMethod         string           `json:"auth_method"`
+		PrivateKeyPath     string           `json:"private_key_path"`
+		HostKeyCheck       string           `json:"host_key_check"`
+		HostKeyFingerprint string           `json:"host_key_fingerprint"`
+		KeepaliveEnabled   *bool            `json:"keepalive_enabled"`
 		KeepaliveInterval  string           `json:"keepalive_interval"`
 		KeepaliveTCP       *keepaliveTCPReq `json:"keepalive_tcp"`
 	}
@@ -1320,15 +1320,15 @@ func (h *Handler) handleUpdateProxy(w http.ResponseWriter, r *http.Request, id s
 		return
 	}
 	var upd struct {
-		Address            string `json:"address"`
-		Username           string `json:"username"`
-		Password           string `json:"password"`
-		Kind               string `json:"kind"`
-		SSHPort            int    `json:"ssh_port"`
-		AuthMethod         string `json:"auth_method"`
-		PrivateKeyPath     string `json:"private_key_path"`
-		HostKeyCheck       string `json:"host_key_check"`
-		HostKeyFingerprint string `json:"host_key_fingerprint"`
+		Address            string           `json:"address"`
+		Username           string           `json:"username"`
+		Password           string           `json:"password"`
+		Kind               string           `json:"kind"`
+		SSHPort            int              `json:"ssh_port"`
+		AuthMethod         string           `json:"auth_method"`
+		PrivateKeyPath     string           `json:"private_key_path"`
+		HostKeyCheck       string           `json:"host_key_check"`
+		HostKeyFingerprint string           `json:"host_key_fingerprint"`
 		KeepaliveEnabled   *bool            `json:"keepalive_enabled"`
 		KeepaliveInterval  string           `json:"keepalive_interval"`
 		KeepaliveTCP       *keepaliveTCPReq `json:"keepalive_tcp"`
@@ -1599,7 +1599,7 @@ func (h *Handler) handlePutConfig(w http.ResponseWriter, r *http.Request) {
 			CacheMaxSize   int    `json:"cache_max_size"`
 			CacheTTL       string `json:"cache_ttl"`
 		} `json:"pac"`
-		TLS                  struct {
+		TLS struct {
 			CertificateFile string `json:"certificate_file"`
 			KeyFile         string `json:"key_file"`
 			CAFile          string `json:"ca_file"`
