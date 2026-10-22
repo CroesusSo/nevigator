@@ -1,6 +1,7 @@
 package router
 
 import (
+	"errors"
 	"io"
 	"net"
 	"sync/atomic"
@@ -222,5 +223,83 @@ func TestDirectRouteFailureReturnsPromptly(t *testing.T) {
 	}
 	if d := time.Since(start); d > 2*time.Second {
 		t.Errorf("DIRECT failure took %v; fallback loop suspected", d)
+	}
+}
+
+// An upstream that rejects our credentials has answered definitively.
+// Retrying DIRECT would send traffic that the route deliberately sent
+// through a proxy straight out of the local network, so the failure must
+// be reported to the caller instead of falling back.
+func TestRouteAuthFailureDoesNotFallBackToDirect(t *testing.T) {
+	// An upstream that demands credentials and then rejects them.
+	up, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer up.Close()
+	go func() {
+		for {
+			c, err := up.Accept()
+			if err != nil {
+				return
+			}
+			go func(c net.Conn) {
+				defer c.Close()
+				hdr := make([]byte, 2)
+				if _, err := io.ReadFull(c, hdr); err != nil {
+					return
+				}
+				methods := make([]byte, hdr[1])
+				if _, err := io.ReadFull(c, methods); err != nil {
+					return
+				}
+				c.Write([]byte{0x05, 0x02}) // user/pass
+				rest := make([]byte, 512)
+				c.Read(rest)
+				c.Write([]byte{0x01, 0x01}) // RFC 1929 failure
+			}(c)
+		}
+	}()
+
+	// A destination that a DIRECT dial would reach successfully.
+	dest, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer dest.Close()
+	reached := make(chan struct{}, 1)
+	go func() {
+		c, err := dest.Accept()
+		if err != nil {
+			return
+		}
+		reached <- struct{}{}
+		c.Close()
+	}()
+
+	rt, err := NewRouter(pac.RouterConfig{DialTimeout: 2 * time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rt.SetProxyRegistry([]pac.ExternalProxy{{
+		ID:       "up",
+		Kind:     "socks5",
+		Address:  up.Addr().String(),
+		Username: "user",
+		Password: "wrongpass",
+	}})
+
+	conn, err := rt.Route(dest.Addr().String(), pac.Route{Strategy: "EXTERNAL", ExternalID: "up"})
+	if err == nil {
+		conn.Close()
+		t.Fatal("expected the authentication failure to be reported, not retried DIRECT")
+	}
+	if !errors.Is(err, ErrSOCKS5AuthFailed) {
+		t.Errorf("error %v does not wrap ErrSOCKS5AuthFailed", err)
+	}
+	select {
+	case <-reached:
+		t.Fatal("the destination was dialled DIRECT after the upstream rejected our credentials")
+	case <-time.After(100 * time.Millisecond):
 	}
 }

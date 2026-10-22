@@ -131,6 +131,7 @@ func (r *Router) dialDirect(dest string) (net.Conn, error) {
 func isDeterministic(err error) bool {
 	switch {
 	case errors.Is(err, ErrUnknownStrategy),
+		errors.Is(err, ErrSOCKS5AuthFailed),
 		errors.Is(err, ErrInvalidSOCKS5Address),
 		errors.Is(err, socks5.ErrDomainTooLong),
 		errors.Is(err, socks5.ErrEmptyDomain):
@@ -213,6 +214,13 @@ func (r *Router) dialSOCKS5WithAuth(destAddr, socksAddr string, auth *socks5.Aut
 	// Use socks5.DialWithAuth to handle TCP dial + SOCKS5 handshake
 	conn, err := socks5.DialWithAuthKeepAlive("tcp", socksAddr, auth, r.dialTimeout, &r.cfg.TCPKeepAlive)
 	if err != nil {
+		// An upstream that rejects our credentials, or refuses every method
+		// we offered, has answered definitively. Retrying DIRECT would send
+		// traffic that the route deliberately sent through a proxy straight
+		// out of the local network, so it must be reported as-is.
+		if errors.Is(err, socks5.ErrAuthFailed) || errors.Is(err, socks5.ErrNoAcceptableMethod) {
+			return nil, fmt.Errorf("%w: %v", ErrSOCKS5AuthFailed, err)
+		}
 		return nil, err
 	}
 

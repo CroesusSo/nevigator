@@ -88,10 +88,13 @@ func DialWithAuthKeepAlive(network, addr string, auth *Auth, timeout time.Durati
 		}
 		if authResp[1] != REPSuccess {
 			conn.Close()
-			return nil, fmt.Errorf("authentication failed: code %d", authResp[1])
+			return nil, fmt.Errorf("%w: code %d", ErrAuthFailed, authResp[1])
 		}
 	default:
 		conn.Close()
+		if chosen == AuthNoAcceptable {
+			return nil, ErrNoAcceptableMethod
+		}
 		return nil, fmt.Errorf("unsupported auth method: %d", chosen)
 	}
 

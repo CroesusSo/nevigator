@@ -42,6 +42,10 @@ var (
 	ErrUserPassTooLong   = fmt.Errorf("SOCKS5 username or password exceeds 255 bytes")
 	ErrNoAuthMethodFound = fmt.Errorf("no mutually supported authentication method")
 	ErrAuthVersion       = fmt.Errorf("invalid SOCKS5 user/pass subnegotiation version")
+	// ErrAuthFailed means the upstream rejected the credentials we sent.
+	ErrAuthFailed = fmt.Errorf("SOCKS5 authentication rejected by upstream")
+	// ErrNoAcceptableMethod means the upstream refused every method we offered.
+	ErrNoAcceptableMethod = fmt.Errorf("upstream rejected all offered authentication methods")
 )
 
 // Auth holds credentials for SOCKS5 username/password authentication.
