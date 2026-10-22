@@ -32,6 +32,23 @@ type Server struct {
 	httpsServer *http.Server // Optional TLS-wrapped HTTP proxy
 	socks5Conn  chan net.Conn
 	stopped     chan struct{}
+	stopOnce    sync.Once
+
+	// socks5Ln is the SOCKS5 listener, kept so Stop() can close it. The
+	// accept loop parks in Accept(), so without an explicit close the
+	// port stays bound and the proxy keeps serving after shutdown.
+	socks5Ln net.Listener
+
+	// drainGrace bounds how long Stop() waits for in-flight connections
+	// before it closes them. Zero uses the default.
+	drainGrace time.Duration
+
+	// drainMu guards the in-flight connection bookkeeping below.
+	drainMu    sync.Mutex
+	stopping   bool
+	activeConn int
+	drained    chan struct{}
+	liveConns  map[string][]net.Conn
 
 	mu         sync.RWMutex
 	conns      map[string]*status.Connection
@@ -87,20 +104,29 @@ func NewServer(cfg pac.ProxyConfig, evaluator *pac.Evaluator, router *router.Rou
 		if s.tlsConfig == nil {
 			log.Printf("Warning: HTTPS proxy configured on %s but TLS certificate/key not provided", cfg.HTTPSListen)
 		} else {
-			s.httpsServer = &http.Server{
+			httpsSrv := &http.Server{
 				Addr:    cfg.HTTPSListen,
 				Handler: topHandler,
 			}
+			s.mu.Lock()
+			s.httpsServer = httpsSrv
+			s.mu.Unlock()
 			// Start HTTPS listener in a separate goroutine
 			go func() {
 				ln, err := net.Listen("tcp", cfg.HTTPSListen)
 				if err != nil {
 					log.Printf("HTTPS proxy listen failed on %s: %v", cfg.HTTPSListen, err)
-					s.httpsServer = nil
+					// Clear the field under the lock: Stop() reads it from
+					// another goroutine.
+					s.mu.Lock()
+					if s.httpsServer == httpsSrv {
+						s.httpsServer = nil
+					}
+					s.mu.Unlock()
 					return
 				}
 				tlsLn := tls.NewListener(ln, s.tlsConfig)
-				if err := s.httpsServer.Serve(tlsLn); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				if err := httpsSrv.Serve(tlsLn); err != nil && !errors.Is(err, http.ErrServerClosed) {
 					log.Printf("HTTPS proxy server error: %v", err)
 				}
 			}()
@@ -231,15 +257,124 @@ func (s *Server) Start() error {
 	return nil
 }
 
-// Stop gracefully shuts down the server.
-func (s *Server) Stop() error {
-	close(s.stopped)
-	if s.httpsServer != nil {
-		if err := s.httpsServer.Close(); err != nil {
-			log.Printf("HTTPS server shutdown error: %v", err)
-		}
+// defaultDrainGrace bounds how long Stop() waits for in-flight connections.
+const defaultDrainGrace = 5 * time.Second
+
+// beginConn registers a new in-flight connection. It returns false if the
+// server is already shutting down, in which case the caller must close the
+// connection instead of serving it.
+func (s *Server) beginConn() bool {
+	s.drainMu.Lock()
+	defer s.drainMu.Unlock()
+	if s.stopping {
+		return false
 	}
-	return s.httpServer.Close()
+	s.activeConn++
+	return true
+}
+
+// endConn marks a connection as finished. The last one to finish closes the
+// drained channel, releasing a waiting Stop().
+func (s *Server) endConn() {
+	s.drainMu.Lock()
+	defer s.drainMu.Unlock()
+	s.activeConn--
+	if s.activeConn <= 0 && s.drained != nil {
+		close(s.drained)
+		s.drained = nil
+	}
+}
+
+// trackLive records the sockets of an in-flight connection so a shutdown
+// that outlasts the grace period can close them.
+func (s *Server) trackLive(id string, conns ...net.Conn) {
+	s.drainMu.Lock()
+	defer s.drainMu.Unlock()
+	if s.liveConns == nil {
+		s.liveConns = make(map[string][]net.Conn)
+	}
+	s.liveConns[id] = conns
+}
+
+// untrackLive forgets a finished connection.
+func (s *Server) untrackLive(id string) {
+	s.drainMu.Lock()
+	defer s.drainMu.Unlock()
+	delete(s.liveConns, id)
+}
+
+// Stop gracefully shuts down the server.
+//
+// It stops accepting new connections, closes the SOCKS5 listener, and waits
+// for in-flight connections to finish, up to the drain grace period. Any
+// connection still running when the grace period expires is closed.
+//
+// Calling Stop() more than once is safe.
+func (s *Server) Stop() error {
+	var err error
+	s.stopOnce.Do(func() {
+		close(s.stopped)
+
+		// Refuse new connections from here on.
+		s.drainMu.Lock()
+		s.stopping = true
+		s.drained = make(chan struct{})
+		if s.activeConn <= 0 {
+			close(s.drained)
+			s.drained = nil
+		}
+		s.drainMu.Unlock()
+
+		// Close the SOCKS5 listener. The accept loop is parked in Accept(),
+		// so it will not notice the stopped channel on its own; closing the
+		// listener is what actually releases the port and ends the loop.
+		s.mu.Lock()
+		ln := s.socks5Ln
+		s.socks5Ln = nil
+		httpsSrv := s.httpsServer
+		s.mu.Unlock()
+		if ln != nil {
+			ln.Close()
+		}
+
+		if httpsSrv != nil {
+			if herr := httpsSrv.Close(); herr != nil {
+				log.Printf("HTTPS server shutdown error: %v", herr)
+			}
+		}
+		err = s.httpServer.Close()
+
+		// Wait for the in-flight connections to drain.
+		s.drainMu.Lock()
+		drained := s.drained
+		s.drainMu.Unlock()
+
+		grace := s.drainGrace
+		if grace <= 0 {
+			grace = defaultDrainGrace
+		}
+		if drained != nil {
+			select {
+			case <-drained:
+				// All connections finished on their own.
+			case <-time.After(grace):
+				// The grace period expired: close whatever is left so
+				// Stop() always returns instead of hanging on a stuck
+				// tunnel.
+				s.drainMu.Lock()
+				live := s.liveConns
+				s.liveConns = nil
+				s.drainMu.Unlock()
+				for _, conns := range live {
+					for _, c := range conns {
+						c.Close()
+					}
+				}
+				log.Printf("Shutdown grace period expired; closed %d in-flight connections", len(live))
+			}
+		}
+	})
+	return err
 }
 
 // trackConnection records a new active connection.
@@ -342,8 +477,17 @@ func (s *Server) handleCONNECT(w http.ResponseWriter, r *http.Request, host stri
 	// Track the connection
 	connID := s.trackConnection(clientConn.RemoteAddr().String(), dest, route.Strategy, protocol)
 
-	// Relay data between client and server
-	go s.relay(connID, clientConn, outbound)
+	// Relay data between client and server. The connection is counted so
+	// that Stop() waits for the tunnel to finish before returning.
+	if !s.beginConn() {
+		clientConn.Close()
+		outbound.Close()
+		return
+	}
+	go func() {
+		defer s.endConn()
+		s.relay(connID, clientConn, outbound)
+	}()
 }
 
 // handleHTTPSConnect handles HTTPS CONNECT tunneling requests with TLS termination.
@@ -400,8 +544,17 @@ func (s *Server) handleHTTPSConnect(w http.ResponseWriter, r *http.Request, host
 	}
 	connID := s.trackConnection(clientConn.RemoteAddr().String(), dest, route.Strategy, protocol)
 
-	// Relay data between client and server
-	go s.relay(connID, clientConn, outbound)
+	// Relay data between client and server. The connection is counted so
+	// that Stop() waits for the tunnel to finish before returning.
+	if !s.beginConn() {
+		clientConn.Close()
+		outbound.Close()
+		return
+	}
+	go func() {
+		defer s.endConn()
+		s.relay(connID, clientConn, outbound)
+	}()
 }
 
 // listenSOCKS5 accepts SOCKS5 client connections.
@@ -411,23 +564,38 @@ func (s *Server) listenSOCKS5() {
 		log.Printf("SOCKS5 listen failed: %v", err)
 		return
 	}
+	s.mu.Lock()
+	s.socks5Ln = ln
+	s.mu.Unlock()
 	defer ln.Close()
 	log.Printf("SOCKS5 listening on %s", s.cfg.SOCKS5Listen)
 
 	for {
-		select {
-		case <-s.stopped:
-			return
-		default:
-		}
 		conn, err := ln.Accept()
 		if err != nil {
-			if !errors.Is(err, net.ErrClosed) {
-				log.Printf("SOCKS5 accept error: %v", err)
+			// A closed listener ends the loop; any other error is logged
+			// and the loop continues.
+			if errors.Is(err, net.ErrClosed) {
+				return
 			}
+			select {
+			case <-s.stopped:
+				return
+			default:
+			}
+			log.Printf("SOCKS5 accept error: %v", err)
 			continue
 		}
-		go s.handleSOCKS5(conn)
+		// Count the connection so Stop() can drain it. Add before the
+		// goroutine starts, and pair it with a Done in the handler.
+		if !s.beginConn() {
+			conn.Close()
+			return
+		}
+		go func() {
+			defer s.endConn()
+			s.handleSOCKS5(conn)
+		}()
 	}
 }
 
@@ -620,8 +788,12 @@ func (s *Server) handleSOCKS5(conn net.Conn) {
 // relay copies data between two connections bidirectionally.
 func (s *Server) relay(connID string, left, right net.Conn) {
 	defer s.untrackConnection(connID)
+	defer s.untrackLive(connID)
 	defer left.Close()
 	defer right.Close()
+	// Record the sockets so a shutdown that outlasts the grace period can
+	// close them.
+	s.trackLive(connID, left, right)
 	errCh := make(chan error, 2)
 	go func() {
 		_, err := io.Copy(right, left)

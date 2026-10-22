@@ -415,8 +415,24 @@ func main() {
 	<-sigCh
 	log.Println("Shutting down...")
 
-	proxySrv.Stop()
-	adminSrv.Shutdown(context.Background())
+	// Stop the proxy first: it stops accepting new connections and drains
+	// the tunnels that are already established.
+	if err := proxySrv.Stop(); err != nil {
+		log.Printf("Proxy shutdown error: %v", err)
+	}
+
+	// Then the admin server, with a deadline. Shutdown waits for the
+	// in-flight requests, and an unbounded wait would keep the process
+	// alive on SIGTERM for as long as a request takes.
+	adminCtx, adminCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer adminCancel()
+	if err := adminSrv.Shutdown(adminCtx); err != nil {
+		log.Printf("Admin server shutdown error: %v", err)
+	}
+
+	// The SSH tunnels are closed by the deferred tunnelMgr.Close(), which
+	// runs after the proxy has drained, so the tunnels stay usable for the
+	// connections that were still finishing.
 	evaluator.Close()
 }
 
