@@ -1,6 +1,7 @@
 package main
 
 import (
+	"net"
 	"os"
 	"path/filepath"
 	"testing"
@@ -130,21 +131,102 @@ func TestDefaultProxyParsing(t *testing.T) {
 	}
 }
 
-// TestRouterNoFallback tests that failed SOCKS5 route retries but does NOT fall back to DIRECT.
-func TestRouterNoFallback(t *testing.T) {
-	routerCfg := pac.RouterConfig{
-		DialTimeout: 50 * time.Millisecond,
+// TestRouterFallsBackToDirect verifies that a failed SOCKS5 route retries via
+// DIRECT, as documented: "Route fallback: if chosen route fails (not DIRECT),
+// automatically retries DIRECT."
+//
+// The upstream here is a closed loopback port, so the SOCKS5 dial fails
+// immediately without touching the network, and the destination is a local
+// listener so the DIRECT fallback can be observed succeeding.
+func TestRouterFallsBackToDirect(t *testing.T) {
+	// Destination that DIRECT can reach.
+	target, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("starting destination: %v", err)
 	}
-	r, err := router.NewRouter(routerCfg)
+	defer target.Close()
+
+	// A SOCKS5 upstream that is guaranteed to refuse: bind then close.
+	dead, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("reserving dead upstream port: %v", err)
+	}
+	deadAddr := dead.Addr().String()
+	dead.Close()
+
+	r, err := router.NewRouter(pac.RouterConfig{DialTimeout: 500 * time.Millisecond})
 	if err != nil {
 		t.Fatalf("NewRouter: %v", err)
 	}
-	dest := "8.8.8.8:53"
-	// Use invalid SOCKS5 address - should fail after retries, NOT fallback to DIRECT
-	route := pac.Route{Strategy: "SOCKS5", Address: "192.0.2.1:1080"}
-	_, err = r.Route(dest, route)
+
+	route := pac.Route{Strategy: "SOCKS5", Address: deadAddr}
+	conn, err := r.Route(target.Addr().String(), route)
+	if err != nil {
+		t.Fatalf("expected DIRECT fallback to succeed, got error: %v", err)
+	}
+	defer conn.Close()
+
+	// The returned conn must be the direct one, not a SOCKS5 tunnel.
+	if _, err := conn.Write([]byte("ping")); err != nil {
+		t.Errorf("fallback connection not usable: %v", err)
+	}
+}
+
+// TestRouterFallbackFailsWhenBothRoutesFail checks that the fallback does not
+// mask an unreachable destination: with both the SOCKS5 upstream and DIRECT
+// unavailable, Route must return an error mentioning the original cause.
+func TestRouterFallbackFailsWhenBothRoutesFail(t *testing.T) {
+	dead, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("reserving dead upstream port: %v", err)
+	}
+	deadAddr := dead.Addr().String()
+	dead.Close()
+
+	// A destination that nothing is listening on.
+	closed, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("reserving destination port: %v", err)
+	}
+	dest := closed.Addr().String()
+	closed.Close()
+
+	r, err := router.NewRouter(pac.RouterConfig{DialTimeout: 300 * time.Millisecond})
+	if err != nil {
+		t.Fatalf("NewRouter: %v", err)
+	}
+
+	route := pac.Route{Strategy: "SOCKS5", Address: deadAddr}
+	if _, err := r.Route(dest, route); err == nil {
+		t.Fatal("expected an error when both the route and the DIRECT fallback fail")
+	}
+}
+
+// TestRouterDirectRouteDoesNotRecurse checks that a failing DIRECT route
+// returns its own error instead of retrying through the fallback.
+//
+// The destination is a loopback address in TEST-NET-1 (192.0.2.0/24), which is
+// unroutable, so the dial blocks until DialTimeout rather than being refused
+// immediately. If the fallback re-entered, the call would block for two full
+// timeouts, which the assertion below detects.
+func TestRouterDirectRouteDoesNotRecurse(t *testing.T) {
+	const dialTimeout = 300 * time.Millisecond
+	r, err := router.NewRouter(pac.RouterConfig{DialTimeout: dialTimeout})
+	if err != nil {
+		t.Fatalf("NewRouter: %v", err)
+	}
+
+	start := time.Now()
+	_, err = r.Route("192.0.2.1:9", pac.Route{Strategy: "DIRECT"})
+	elapsed := time.Since(start)
+
 	if err == nil {
-		t.Error("expected error for invalid SOCKS5 route, got nil")
+		t.Fatal("expected an error for an unreachable DIRECT destination")
+	}
+	// One timeout, not two. Allow slack for scheduler noise but well under 2x.
+	if elapsed > 2*dialTimeout {
+		t.Errorf("DIRECT failure took %v (> 2x dialTimeout %v), so the fallback re-entered",
+			elapsed, dialTimeout)
 	}
 }
 

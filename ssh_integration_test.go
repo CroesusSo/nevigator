@@ -13,17 +13,32 @@ import (
 // These integration tests require a running SSH server.
 // Set RUN_SSH_TESTS=1 environment variable to run them.
 
+// runSSHTests reports whether the tests needing a live SSH server should run.
+// The previous TestMain called os.Exit(0) when the env var was unset, which
+// skipped every test in this package — the 17 below that need no server
+// included. The guard now applies per test via requireSSHServer.
+var runSSHTests bool
+
 func TestMain(m *testing.M) {
-	if os.Getenv("RUN_SSH_TESTS") != "1" {
-		fmt.Println("Skipping SSH integration tests; set RUN_SSH_TESTS=1 to run")
-		os.Exit(0)
+	runSSHTests = os.Getenv("RUN_SSH_TESTS") == "1"
+	if !runSSHTests {
+		fmt.Println("SSH integration tests skipped; set RUN_SSH_TESTS=1 to run them")
 	}
-	m.Run()
+	os.Exit(m.Run())
+}
+
+// requireSSHServer skips the calling test unless SSH integration is enabled.
+func requireSSHServer(t *testing.T) {
+	t.Helper()
+	if !runSSHTests {
+		t.Skip("set RUN_SSH_TESTS=1 to run; needs a live SSH server")
+	}
 }
 
 // TestSSHProxyConnect tests connecting through an SSH proxy (manual setup required).
 // This test expects an SSH server running on 127.0.0.1:2222 with user/pass test/testpass.
 func TestSSHProxyConnect(t *testing.T) {
+	requireSSHServer(t)
 	proxy := pac.ExternalProxy{
 		ID:         "manual-ssh",
 		Kind:       "ssh",
@@ -57,6 +72,7 @@ func TestSSHProxyConnect(t *testing.T) {
 
 // TestSSHRouterIntegration tests that router can use an SSH proxy.
 func TestSSHRouterIntegration(t *testing.T) {
+	requireSSHServer(t)
 	proxy := pac.ExternalProxy{
 		ID:         "router-ssh",
 		Kind:       "ssh",
@@ -78,6 +94,7 @@ func TestSSHRouterIntegration(t *testing.T) {
 
 // TestSSHTunnelManagement tests creating and removing tunnels via UpdateProxies.
 func TestSSHTunnelManagement(t *testing.T) {
+	requireSSHServer(t)
 	// We'll use a non-existent SSH server to ensure tunnels fail gracefully
 	proxy1 := pac.ExternalProxy{
 		ID:         "bad-ssh",
