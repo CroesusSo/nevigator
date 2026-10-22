@@ -4,6 +4,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -133,4 +134,114 @@ func TestSOCKS5TunnelSurvivesHandshakeTimeout(t *testing.T) {
 		t.Errorf("got %q", buf)
 	}
 	t.Log("tunnel still alive after handshake timeout: OK")
+}
+
+// TestSOCKS5SlowUpstreamStillGetsReply covers the case where the outbound
+// route takes longer than the handshake timeout.
+//
+// The handshake deadline bounds the client's greeting, authentication and
+// CONNECT request. It must not stay armed across the outbound dial: that
+// dial carries its own timeout, and a slow upstream would otherwise expire
+// the deadline before the SOCKS5 reply could be written. The client would
+// then see the connection die with no reply at all.
+func TestSOCKS5SlowUpstreamStillGetsReply(t *testing.T) {
+	// Upstream that answers the CONNECT request only after a delay.
+	up, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer up.Close()
+	go func() {
+		for {
+			c, err := up.Accept()
+			if err != nil {
+				return
+			}
+			go func(c net.Conn) {
+				defer c.Close()
+				hdr := make([]byte, 2)
+				if _, err := io.ReadFull(c, hdr); err != nil {
+					return
+				}
+				methods := make([]byte, hdr[1])
+				if _, err := io.ReadFull(c, methods); err != nil {
+					return
+				}
+				c.Write([]byte{socks5.Version, socks5.AuthNone})
+				req := make([]byte, 262)
+				if _, err := io.ReadFull(c, req[:4]); err != nil {
+					return
+				}
+				io.ReadFull(c, req[4:10])
+				time.Sleep(1 * time.Second) // slower than the handshake timeout
+				c.Write(socks5.EncodeReply(socks5.REPSuccess))
+				time.Sleep(2 * time.Second)
+			}(c)
+		}
+	}()
+
+	// PAC routes www.example.com to the slow upstream.
+	dir := t.TempDir()
+	pacPath := filepath.Join(dir, "t.pac")
+	pacContent := `var __PAC_RULES__ = {"version":1,"rules":[{"id":"r1","source":"user","enabled":true,` +
+		`"match":"domain_suffix","value":".example.com","action":"PROXY","route":"SOCKS5 ` + up.Addr().String() + `"}]};` +
+		"\nfunction FindProxyForURL(url, host) { return \"DIRECT\"; }"
+	if err := os.WriteFile(pacPath, []byte(pacContent), 0600); err != nil {
+		t.Fatal(err)
+	}
+	ev, err := pac.NewEvaluator(pac.EvaluatorConfig{
+		PACPath: pacPath, EvalTimeout: time.Second,
+		FallbackRoute: pac.Route{Strategy: "DIRECT"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ev.Close()
+	rt, _ := router.NewRouter(pac.RouterConfig{DialTimeout: 5 * time.Second})
+	s := NewServer(pac.ProxyConfig{
+		HTTPListen:             "127.0.0.1:0",
+		SOCKS5HandshakeTimeout: 250 * time.Millisecond, // shorter than the upstream delay
+	}, ev, rt)
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	go func() {
+		c, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		go s.handleSOCKS5(c)
+	}()
+
+	client, err := net.Dial("tcp", ln.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	client.SetDeadline(time.Now().Add(5 * time.Second))
+
+	client.Write([]byte{socks5.Version, 0x01, socks5.AuthNone})
+	m := make([]byte, 2)
+	if _, err := io.ReadFull(client, m); err != nil {
+		t.Fatalf("greeting: %v", err)
+	}
+
+	dom := "www.example.com"
+	req := []byte{socks5.Version, socks5.CMDConnect, 0x00, socks5.ATYPDomain, byte(len(dom))}
+	req = append(req, []byte(dom)...)
+	req = append(req, 0x01, 0xBB)
+	client.Write(req)
+
+	rep := make([]byte, 10)
+	if _, err := io.ReadFull(client, rep); err != nil {
+		t.Fatalf("BUG: no SOCKS5 reply because the handshake deadline expired during the "+
+			"outbound dial (read failed: %v)", err)
+	}
+	if rep[1] != socks5.REPSuccess {
+		t.Fatalf("REP = %d, want 0", rep[1])
+	}
+	t.Logf("client received a SOCKS5 reply from a slow upstream: OK")
 }

@@ -512,9 +512,11 @@ func (s *Server) handleSOCKS5(conn net.Conn) {
 	// way to keep them warm: TCP keepalive is the only mechanism available.
 	pac.ApplyKeepAlive(conn, s.cfg.TCPKeepAlive)
 
-	// Bound the handshake so a silent client cannot pin this goroutine forever.
-	// It must be cleared BEFORE relaying, otherwise established tunnels die
-	// when the handshake deadline expires.
+	// Bound the client's handshake so a silent client cannot pin this
+	// goroutine forever. The deadline is cleared as soon as the CONNECT
+	// request has been read: the outbound dial is the server's own work and
+	// carries its own timeout, so leaving the deadline armed across it would
+	// expire it before the SOCKS5 reply could be delivered.
 	conn.SetDeadline(time.Now().Add(s.socks5HandshakeTimeout()))
 
 	// Read greeting: VER, NMETHODS, METHODS[nmethods]
@@ -590,6 +592,12 @@ func (s *Server) handleSOCKS5(conn net.Conn) {
 	}
 	dest := formatDest(host, int(port))
 
+	// The client-controlled part of the handshake is over. Clear the
+	// deadline before the outbound dial: that dial has its own timeout, and
+	// a slow upstream must not expire the deadline before the reply below
+	// can be written.
+	conn.SetDeadline(time.Time{})
+
 	// Evaluate route and connect
 	route := s.evaluator.Evaluate(host)
 	outbound, err := s.router.Route(dest, route)
@@ -602,7 +610,7 @@ func (s *Server) handleSOCKS5(conn net.Conn) {
 	// Success
 	conn.Write(socks5.EncodeReply(socks5.REPSuccess))
 
-	// Handshake complete: drop the deadline so the tunnel is not cut off.
+	// The tunnel must carry no deadline.
 	conn.SetDeadline(time.Time{})
 
 	connID := s.trackConnection(conn.RemoteAddr().String(), dest, route.Strategy, "socks5")
