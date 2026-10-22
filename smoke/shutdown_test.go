@@ -10,6 +10,7 @@
 package smoke
 
 import (
+	"bytes"
 	"fmt"
 	"io"
 	"net"
@@ -18,6 +19,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -33,13 +35,18 @@ func startHangServer(t *testing.T) string {
 	}
 	t.Cleanup(func() { ln.Close() })
 	go func() {
-		var held []net.Conn
 		for {
 			c, err := ln.Accept()
 			if err != nil {
 				return
 			}
-			held = append(held, c) // hold it open, never respond
+			// Hold the connection open without answering it: the client
+			// blocks until its own timeout, which is what keeps the
+			// request in flight across the shutdown.
+			go func(c net.Conn) {
+				defer c.Close()
+				io.Copy(io.Discard, c)
+			}(c)
 		}
 	}()
 	return ln.Addr().String()
@@ -94,6 +101,42 @@ func socks5Greets(port int) bool {
 	return reply[0] == 0x05 && reply[1] == 0x00
 }
 
+// logWatcher captures the process output and closes started once the
+// shutdown has begun.
+//
+// A signal is delivered asynchronously, so checking the SOCKS5 port
+// straight after sending SIGTERM races the process: it may still be
+// serving simply because it has not been scheduled to handle the signal
+// yet. The log line is the point where the shutdown has definitively
+// started, so the port is only required to have stopped serving after
+// that.
+type logWatcher struct {
+	mu      sync.Mutex
+	buf     strings.Builder
+	started chan struct{}
+	once    sync.Once
+}
+
+func newLogWatcher() *logWatcher {
+	return &logWatcher{started: make(chan struct{})}
+}
+
+func (w *logWatcher) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	w.buf.Write(p)
+	w.mu.Unlock()
+	if bytes.Contains(p, []byte("Shutting down")) {
+		w.once.Do(func() { close(w.started) })
+	}
+	return len(p), nil
+}
+
+func (w *logWatcher) String() string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.buf.String()
+}
+
 // TestShutdown checks the SIGTERM path against the real binary.
 func TestShutdown(t *testing.T) {
 	bin := buildBinary(t)
@@ -105,9 +148,9 @@ func TestShutdown(t *testing.T) {
 	cfg := writeShutdownConfig(t, dir, socksPort, adminPort, "http://"+hangAddr+"/gfwlist.txt")
 
 	cmd := exec.Command(bin, "-conf", cfg)
-	var logs strings.Builder
-	cmd.Stdout = &logs
-	cmd.Stderr = &logs
+	logs := newLogWatcher()
+	cmd.Stdout = logs
+	cmd.Stderr = logs
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("starting binary: %v", err)
 	}
@@ -120,7 +163,7 @@ func TestShutdown(t *testing.T) {
 	})
 
 	base := fmt.Sprintf("http://127.0.0.1:%d", adminPort)
-	waitReady(t, base, &logs)
+	waitReady(t, base, logs)
 
 	// Wait for the SOCKS5 listener to come up.
 	deadline := time.Now().Add(10 * time.Second)
@@ -154,17 +197,27 @@ func TestShutdown(t *testing.T) {
 		t.Fatalf("sending SIGTERM: %v", err)
 	}
 
-	// The SOCKS5 port must stop serving immediately.
+	// Wait until the process has actually begun its shutdown. Checking the
+	// port before this point races the signal delivery.
+	select {
+	case <-logs.started:
+	case <-time.After(10 * time.Second):
+		t.Fatalf("the process did not start shutting down within 10s of SIGTERM\noutput:\n%s", logs.String())
+	}
+
+	// The SOCKS5 port must stop serving. It has to keep answering "no" for
+	// the whole window: one successful greeting after the shutdown began
+	// means the proxy is still accepting clients.
 	servedAfter := false
-	for i := 0; i < 60; i++ {
+	for i := 0; i < 40; i++ {
 		if socks5Greets(socksPort) {
 			servedAfter = true
 			break
 		}
-		time.Sleep(250 * time.Millisecond)
+		time.Sleep(100 * time.Millisecond)
 	}
 	if servedAfter {
-		t.Fatalf("the SOCKS5 port was still serving after SIGTERM\noutput:\n%s", logs.String())
+		t.Fatalf("the SOCKS5 port was still serving after the shutdown began\noutput:\n%s", logs.String())
 	}
 
 	// The process must still exit. The admin shutdown is bounded, so it

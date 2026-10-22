@@ -88,9 +88,9 @@ func TestSmoke(t *testing.T) {
 
 	// Start the process. Output is captured so a startup failure explains itself.
 	cmd := exec.Command(bin, "-conf", cfg)
-	var logs strings.Builder
-	cmd.Stdout = &logs
-	cmd.Stderr = &logs
+	logs := newLogWatcher()
+	cmd.Stdout = logs
+	cmd.Stderr = logs
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("starting binary: %v", err)
 	}
@@ -103,7 +103,7 @@ func TestSmoke(t *testing.T) {
 	})
 
 	base := fmt.Sprintf("http://127.0.0.1:%d", adminPort)
-	waitReady(t, base, &logs)
+	waitReady(t, base, logs)
 
 	t.Run("GET /api/config exposes the new settings", func(t *testing.T) {
 		var cfgResp struct {
@@ -277,7 +277,7 @@ func TestSmoke(t *testing.T) {
 }
 
 // waitReady polls the admin endpoint until the server responds or we give up.
-func waitReady(t *testing.T, base string, logs *strings.Builder) {
+func waitReady(t *testing.T, base string, logs *logWatcher) {
 	t.Helper()
 	deadline := time.Now().Add(15 * time.Second)
 	for time.Now().Before(deadline) {
