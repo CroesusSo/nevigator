@@ -339,9 +339,17 @@ func NewNativeRuleEngine(pacContent string, fallback Route, enableDeepest bool) 
 
 // Evaluate returns the best matching route for the given host.
 func (e *NativeRuleEngine) Evaluate(host string) Route {
+	route, _ := e.EvaluateWithMatch(host)
+	return route
+}
+
+// EvaluateWithMatch returns the best matching route for the given host and
+// reports whether an explicit rule matched it. When no rule matches, the
+// fallback route is returned.
+func (e *NativeRuleEngine) EvaluateWithMatch(host string) (Route, bool) {
 	rule := e.suffixTrie.match(host, e.enableDeepest)
 	if rule != nil {
-		return rule.route
+		return rule.route, true
 	}
-	return e.fallback
+	return e.fallback, false
 }

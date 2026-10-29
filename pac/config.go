@@ -150,6 +150,22 @@ type Route struct {
 	ExternalID string // used when Strategy == "EXTERNAL"
 }
 
+// GFWSourceRoute returns the route a GFW list source host takes when no rule
+// matches it: the default external proxy when one is configured, a direct
+// connection otherwise.
+//
+// It matches the route the GFW list rules themselves resolve to, so the
+// source host reaches the upstream proxy the same way whether or not a rule
+// for it exists yet. The GFW list is fetched before any rule for it can
+// exist, so without this the first fetch would go out directly and fail on a
+// censored network.
+func GFWSourceRoute(defaultExternalProxy string) Route {
+	if defaultExternalProxy != "" {
+		return Route{Strategy: "DEFAULT"}
+	}
+	return Route{Strategy: "DIRECT"}
+}
+
 // EvaluatorConfig holds configuration for the PAC Evaluator.
 type EvaluatorConfig struct {
 	PACPath            string        // Path to PAC file
@@ -164,6 +180,13 @@ type EvaluatorConfig struct {
 	EnableURLGlob      bool          `yaml:"enable_url_glob" json:"enable_url_glob"`           // Enable URL-glob rule generation
 	EnableDeepestMatch bool          `yaml:"enable_deepest_match" json:"enable_deepest_match"` // Use deepest/specific match semantics
 
+	// HostFallbacks maps a host name to the route to use when no rule in the
+	// PAC file matches that host. It lets the assembly layer pin the route of
+	// a host that must follow a specific path even while no rule exists for
+	// it, such as the GFW list source, which has to be fetched through the
+	// upstream proxy before the first rule set is available.
+	HostFallbacks map[string]Route `yaml:"host_fallbacks" json:"host_fallbacks"`
+
 	// Cache configuration for native rule engine
 	CacheEnabled bool          `yaml:"cache_enabled" json:"cache_enabled"`
 	CacheMaxSize int           `yaml:"cache_max_size" json:"cache_max_size"`
@@ -175,6 +198,12 @@ type RouterConfig struct {
 	DialTimeout     time.Duration      // Timeout for establishing outbound connections
 	ExternalProxies []ExternalProxy    // Registry of upstream SOCKS5 proxies (injected, not from YAML directly)
 	TCPKeepAlive    TCPKeepAliveConfig // Applied to outbound connections
+
+	// CustomDNSServers are used to resolve the host names of DIRECT
+	// connections instead of the system resolver. A poisoned system resolver
+	// is a common way to break a direct connection, so the configured servers
+	// are tried first. The system resolver is used when they are unreachable.
+	CustomDNSServers []string
 }
 
 // TCPKeepAliveConfig configures TCP keepalive probes on a connection.

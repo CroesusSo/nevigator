@@ -3,8 +3,10 @@ package pac
 import (
 	"fmt"
 	"log"
+	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -24,8 +26,12 @@ type Evaluator struct {
 	closeOnce   sync.Once
 	dnsCache    *dnsCache
 	cache       *EvaluatorCache
-	engineType  string       // "native"
 	lastModTime atomic.Int64 // last modified time in Unix nanoseconds
+
+	// hostFallbacksMu guards hostFallbacks, which the assembly layer updates
+	// at runtime when the GFW list source changes.
+	hostFallbacksMu sync.RWMutex
+	hostFallbacks   map[string]Route
 }
 
 // NewEvaluator creates a new Evaluator with the given config.
@@ -66,6 +72,11 @@ func NewEvaluator(cfg EvaluatorConfig) (*Evaluator, error) {
 		ttl:             cfg.CacheTTL,
 		cleanupInterval: time.Minute,
 	})
+	// Seed the per-host fallback routes from the configuration.
+	e.hostFallbacks = make(map[string]Route, len(cfg.HostFallbacks))
+	for host, route := range cfg.HostFallbacks {
+		e.hostFallbacks[normalizeHostKey(host)] = route
+	}
 	// Start periodic cache stats logging if cache enabled
 	if e.cache != nil {
 		go e.logCacheStatsLoop()
@@ -159,7 +170,6 @@ func (e *Evaluator) reload() error {
 		return fmt.Errorf("native engine build: %w", err)
 	}
 	e.current.Store(engine)
-	e.engineType = "native"
 	e.lastModTime.Store(modTimeNano)
 	if e.cache != nil {
 		e.cache.InvalidateAll()
@@ -169,6 +179,11 @@ func (e *Evaluator) reload() error {
 }
 
 // Evaluate executes the PAC evaluation for the given host, using cache if enabled.
+//
+// A rule in the PAC file always wins. When no rule matches, the per-host
+// fallback route is consulted before the global fallback route, so a host
+// that must follow a specific path can be pinned even while no rule for it
+// exists.
 func (e *Evaluator) Evaluate(host string) Route {
 	// Try cache first
 	if e.cache != nil {
@@ -188,13 +203,62 @@ func (e *Evaluator) Evaluate(host string) Route {
 		log.Printf("[ERROR] Expected NativeRuleEngine but got %T", val)
 		return e.cfg.FallbackRoute
 	}
-	r := engine.Evaluate(host)
+	r, matched := engine.EvaluateWithMatch(host)
+	if !matched {
+		if fallback, ok := e.hostFallback(host); ok {
+			r = fallback
+		}
+	}
 
 	// Cache the result
 	if e.cache != nil {
 		e.cache.Set(host, r)
 	}
 	return r
+}
+
+// hostFallback returns the per-host fallback route for host, if one is set.
+func (e *Evaluator) hostFallback(host string) (Route, bool) {
+	e.hostFallbacksMu.RLock()
+	defer e.hostFallbacksMu.RUnlock()
+	route, ok := e.hostFallbacks[normalizeHostKey(host)]
+	return route, ok
+}
+
+// SetHostFallback pins the route used for a host when no PAC rule matches
+// it. It replaces any previous fallback for that host.
+//
+// The cached evaluation results are dropped, because a host that previously
+// fell back to the global route now takes the pinned one.
+func (e *Evaluator) SetHostFallback(host string, route Route) {
+	key := normalizeHostKey(host)
+	e.hostFallbacksMu.Lock()
+	e.hostFallbacks[key] = route
+	e.hostFallbacksMu.Unlock()
+	if e.cache != nil {
+		e.cache.InvalidateAll()
+	}
+}
+
+// RemoveHostFallback removes the per-host fallback route for a host.
+func (e *Evaluator) RemoveHostFallback(host string) {
+	key := normalizeHostKey(host)
+	e.hostFallbacksMu.Lock()
+	delete(e.hostFallbacks, key)
+	e.hostFallbacksMu.Unlock()
+	if e.cache != nil {
+		e.cache.InvalidateAll()
+	}
+}
+
+// normalizeHostKey reduces a host name to the form used to look up rules and
+// per-host fallbacks: lower case, without a port.
+func normalizeHostKey(host string) string {
+	host = strings.ToLower(strings.TrimSpace(host))
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
+	}
+	return strings.TrimSuffix(host, ".")
 }
 
 // CacheStats returns current cache statistics (hits, misses, size, maxSize, hitRate).
