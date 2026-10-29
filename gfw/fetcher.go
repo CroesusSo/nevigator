@@ -7,6 +7,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -25,6 +26,16 @@ type Fetcher struct {
 	ruleCount int
 	etag      string
 	lastMod   string
+}
+
+// SourceHost returns the host name of a GFW list source URL. It returns an
+// empty string when the URL carries no host.
+func SourceHost(sourceURL string) string {
+	u, err := url.Parse(sourceURL)
+	if err != nil {
+		return ""
+	}
+	return u.Hostname()
 }
 
 // FetchResult contains the outcome of a fetch attempt.

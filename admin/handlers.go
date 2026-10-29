@@ -178,11 +178,16 @@ type Handler struct {
 	configPath           string         // path to config YAML
 	router               *router.Router // for proxy registry management
 	defaultExternalProxy string         // cached for PAC regeneration
+
+	// gfwSourceHost is the host of the GFW list source URL that is pinned
+	// to a fixed route, so the list is fetched through the upstream proxy
+	// even before a rule for that host exists.
+	gfwSourceHost string
 }
 
 // NewHandler creates a new admin handler.
 func NewHandler(evaluator *pac.Evaluator, pacPath string, fetcher *gfw.Fetcher, userPath, gfwPath, configPath string, statusProvider status.StatusProvider, router *router.Router, defaultExternalProxy string) *Handler {
-	return &Handler{
+	h := &Handler{
 		evaluator:            evaluator,
 		pacPath:              pacPath,
 		fetcher:              fetcher,
@@ -193,6 +198,41 @@ func NewHandler(evaluator *pac.Evaluator, pacPath string, fetcher *gfw.Fetcher, 
 		router:               router,
 		defaultExternalProxy: defaultExternalProxy,
 	}
+	// The GFW list is fetched through this proxy's own SOCKS5 listener, so
+	// the source host must reach the upstream proxy even before a rule for
+	// it exists. Pin it here so the very first fetch has a route.
+	if fetcher != nil {
+		h.pinGFWSourceRoute(fetcher.SourceURL)
+	}
+	return h
+}
+
+// pinGFWSourceRoute pins the route of the GFW list source host.
+//
+// The list is fetched before any rule for the source host can exist, so
+// without a pinned route the first fetch would leave the host directly and
+// fail on a censored network. An explicit rule still takes precedence over
+// this fallback.
+func (h *Handler) pinGFWSourceRoute(sourceURL string) {
+	if h.evaluator == nil {
+		return
+	}
+	host := gfw.SourceHost(sourceURL)
+	if host == "" {
+		return
+	}
+	h.evaluator.SetHostFallback(host, pac.GFWSourceRoute(h.defaultExternalProxy))
+	h.gfwSourceHost = host
+}
+
+// unpinGFWSourceRoute removes the pinned route of the previous GFW list
+// source host.
+func (h *Handler) unpinGFWSourceRoute() {
+	if h.evaluator == nil || h.gfwSourceHost == "" {
+		return
+	}
+	h.evaluator.RemoveHostFallback(h.gfwSourceHost)
+	h.gfwSourceHost = ""
 }
 
 // RegisterRoutes adds admin routes to the given mux.
@@ -805,7 +845,11 @@ func (h *Handler) handlePutGFWConfig(w http.ResponseWriter, r *http.Request) {
 	// Merge changes
 	changed := false
 	if req.SourceURL != "" && req.SourceURL != h.fetcher.SourceURL {
+		// The pinned route follows the source host: the old host must not
+		// keep it, and the new host needs it before its first fetch.
+		h.unpinGFWSourceRoute()
 		h.fetcher.SourceURL = req.SourceURL
+		h.pinGFWSourceRoute(req.SourceURL)
 		cfg.GFW.SourceURL = req.SourceURL
 		changed = true
 	}
@@ -1656,6 +1700,11 @@ func (h *Handler) handlePutConfig(w http.ResponseWriter, r *http.Request) {
 		cfg.Proxy.DefaultExternalProxy = upd.DefaultExternalProxy
 		h.router.SetDefaultProxyID(upd.DefaultExternalProxy)
 		h.defaultExternalProxy = upd.DefaultExternalProxy
+		// The pinned route of the GFW source host depends on whether a
+		// default external proxy exists, so it is re-pinned here.
+		if h.fetcher != nil {
+			h.pinGFWSourceRoute(h.fetcher.SourceURL)
+		}
 		needRegen = true
 	}
 	// TLS updates (only if provided)
