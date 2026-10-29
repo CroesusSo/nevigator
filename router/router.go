@@ -55,6 +55,10 @@ type Router struct {
 	proxyRegistry  map[string]pac.ExternalProxy // ID → proxy
 	defaultProxyID string
 	tunnelMgr      TunnelManager // optional, for SSH proxies
+
+	// customResolver resolves the host names of DIRECT connections. It is
+	// nil when no custom DNS servers are configured.
+	customResolver *net.Resolver
 }
 
 // NewRouter creates a Router with the given config.
@@ -65,6 +69,10 @@ func NewRouter(cfg pac.RouterConfig) (*Router, error) {
 	}
 	if cfg.DialTimeout == 0 {
 		r.dialTimeout = 30 * time.Second
+	}
+	if len(cfg.CustomDNSServers) > 0 {
+		r.customResolver = pac.CreateCustomResolver(cfg.CustomDNSServers)
+		log.Printf("[Router] Using custom DNS: %v", cfg.CustomDNSServers)
 	}
 	return r, nil
 }
@@ -122,8 +130,17 @@ func (r *Router) Route(dest string, route pac.Route) (net.Conn, error) {
 }
 
 // dialDirect establishes a DIRECT connection with the configured dial timeout.
+//
+// When custom DNS servers are configured they resolve the host name, because
+// a poisoned system resolver is a common way to break a direct connection.
+// They are authoritative: a name they do not know is not retried against the
+// system resolver, which would undo the point of configuring them.
 func (r *Router) dialDirect(dest string) (net.Conn, error) {
-	return r.cfg.TCPKeepAlive.Dialer(r.dialTimeout).Dial("tcp", dest)
+	dialer := r.cfg.TCPKeepAlive.Dialer(r.dialTimeout)
+	if r.customResolver != nil {
+		dialer.Resolver = r.customResolver
+	}
+	return dialer.Dial("tcp", dest)
 }
 
 // isDeterministic reports whether err reflects a configuration or protocol
