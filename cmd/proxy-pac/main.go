@@ -5,7 +5,6 @@ import (
 	"flag"
 	"fmt"
 	"log"
-	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -18,6 +17,7 @@ import (
 	"github.com/yourorg/proxy-pac/pac"
 	"github.com/yourorg/proxy-pac/proxy"
 	"github.com/yourorg/proxy-pac/router"
+	"github.com/yourorg/proxy-pac/socks5"
 	"github.com/yourorg/proxy-pac/ssh"
 	"gopkg.in/yaml.v3"
 )
@@ -260,6 +260,15 @@ func main() {
 		CacheTTL:       cfg.PAC.CacheTTL,
 		FallbackRoute:  pac.Route{Strategy: "DIRECT"},
 	}
+	// The GFW list is fetched before any rule for its source host can
+	// exist, so the source host is pinned to the route the GFW rules
+	// themselves resolve to. Without this the first fetch would leave the
+	// host directly and fail on a censored network.
+	if host := gfw.SourceHost(cfg.GFW.SourceURL); host != "" {
+		evalCfg.HostFallbacks = map[string]pac.Route{
+			host: pac.GFWSourceRoute(cfg.Proxy.DefaultExternalProxy),
+		}
+	}
 	evaluator, err := pac.NewEvaluator(evalCfg)
 	if err != nil {
 		log.Fatalf("Failed to create evaluator: %v", err)
@@ -270,6 +279,10 @@ func main() {
 	routerCfg := pac.RouterConfig{
 		DialTimeout:  30 * time.Second,
 		TCPKeepAlive: cfg.Proxy.TCPKeepAlive,
+		// The GFW list is fetched through this proxy's own SOCKS5
+		// listener, so the host name is resolved by the router when the
+		// route is DIRECT. The custom DNS servers keep working there.
+		CustomDNSServers: cfg.GFW.CustomDNSServers,
 	}
 	router, err := router.NewRouter(routerCfg)
 	if err != nil {
@@ -315,17 +328,31 @@ func main() {
 		router.SetDefaultProxyID(cfg.Proxy.DefaultExternalProxy)
 	}
 
+	// Start the proxy before the GFW fetcher is created. The GFW list is
+	// fetched through this instance's own SOCKS5 listener, so the listener
+	// must be accepting connections before the first fetch goes out.
+	if err := proxySrv.Start(); err != nil {
+		log.Fatalf("Proxy start failed: %v", err)
+	}
+
+	// The address the in-process GFW client dials. It is the bound address,
+	// not the configured one, because the configuration may ask for port 0.
+	socksAddr := proxySrv.SOCKS5DialAddr()
+	if socksAddr == "" {
+		log.Printf("[GFW] No local SOCKS5 listener available; the GFW list cannot be fetched through this proxy")
+	}
+
 	// Create GFW fetcher if configured
 	var gfwFetcher *gfw.Fetcher
+	gfwPath := cfg.GFW.LocalRulesPath
+	if gfwPath == "" {
+		gfwPath = filepath.Join(filepath.Dir(configPath), "gfw-rules.json")
+	}
+	userPath := cfg.GFW.UserRulesPath
+	if userPath == "" {
+		userPath = filepath.Join(filepath.Dir(configPath), "user-rules.json")
+	}
 	if cfg.GFW.SourceURL != "" {
-		gfwPath := cfg.GFW.LocalRulesPath
-		if gfwPath == "" {
-			gfwPath = filepath.Join(filepath.Dir(configPath), "gfw-rules.json")
-		}
-		userPath := cfg.GFW.UserRulesPath
-		if userPath == "" {
-			userPath = filepath.Join(filepath.Dir(configPath), "user-rules.json")
-		}
 		httpTimeout := cfg.GFW.HTTPTimeout
 		if httpTimeout == 0 {
 			httpTimeout = 60 * time.Second
@@ -334,25 +361,47 @@ func main() {
 		gfwFetcher = gfw.NewFetcher(cfg.GFW.SourceURL, gfwPath, httpTimeout)
 		gfwFetcher.SetDisabled(cfg.GFW.Disabled)
 
-		// Custom DNS: if configured, override HTTP client with custom resolver
-		if len(cfg.GFW.CustomDNSServers) > 0 {
-			resolver := pac.CreateCustomResolver(cfg.GFW.CustomDNSServers)
-			dialer := &net.Dialer{
-				Timeout:  httpTimeout,
-				Resolver: resolver,
-			}
-			transport := &http.Transport{
-				DialContext: dialer.DialContext,
-			}
-			customClient := &http.Client{
-				Transport: transport,
-				Timeout:   httpTimeout,
-			}
-			gfwFetcher.HTTPClient = customClient
-			log.Printf("[GFW] Using custom DNS: %v", cfg.GFW.CustomDNSServers)
+		// The list is fetched through this proxy's own SOCKS5 listener, so
+		// the request follows the same routing rules as any other client
+		// and reaches the configured upstream. The destination name is sent
+		// unresolved: the SOCKS5 server resolves it and applies the route.
+		//
+		// The local listener may require authentication, so the same
+		// credentials are used for it.
+		var socksAuth *socks5.Auth
+		if a := cfg.Proxy.SOCKS5Auth; a != nil && (a.Username != "" || a.Password != "") {
+			socksAuth = &socks5.Auth{Username: a.Username, Password: a.Password}
 		}
+		gfwFetcher.HTTPClient = &http.Client{
+			Transport: socks5.NewHTTPTransport(socks5.HTTPTransportOptions{
+				ProxyAddr: socksAddr,
+				Auth:      socksAuth,
+				Timeout:   httpTimeout,
+			}),
+			Timeout: httpTimeout,
+		}
+		log.Printf("[GFW] Fetching the list through the local SOCKS5 proxy at %s", socksAddr)
+	}
 
-		// Fetch on startup
+	// Start admin service
+	adminMux := http.NewServeMux()
+	adminHandler := admin.NewHandler(evaluator, cfg.Proxy.PACPath, gfwFetcher, cfg.GFW.UserRulesPath, cfg.GFW.LocalRulesPath, configPath, proxySrv, router, cfg.Proxy.DefaultExternalProxy)
+	adminHandler.RegisterRoutes(adminMux)
+	adminSrv := &http.Server{
+		Addr:    cfg.Proxy.AdminListen,
+		Handler: adminMux,
+	}
+	go func() {
+		log.Printf("Admin UI listening on %s", cfg.Proxy.AdminListen)
+		if err := adminSrv.ListenAndServe(); err != nil && !errorsIs(err, http.ErrServerClosed) {
+			log.Printf("Admin server error: %v", err)
+		}
+	}()
+
+	// Fetch on startup. This runs after the admin handler exists, because
+	// the handler pins the route of the source host, and that route is what
+	// carries the first fetch.
+	if gfwFetcher != nil {
 		if cfg.GFW.FetchOnStartup && !gfwFetcher.IsDisabled() {
 			go func() {
 				log.Printf("[GFW] Fetching GFW list on startup...")
@@ -387,26 +436,6 @@ func main() {
 			}()
 			log.Printf("[GFW] Periodic fetch enabled: every %v", cfg.GFW.UpdateInterval)
 		}
-	}
-
-	// Start admin service
-	adminMux := http.NewServeMux()
-	adminHandler := admin.NewHandler(evaluator, cfg.Proxy.PACPath, gfwFetcher, cfg.GFW.UserRulesPath, cfg.GFW.LocalRulesPath, configPath, proxySrv, router, cfg.Proxy.DefaultExternalProxy)
-	adminHandler.RegisterRoutes(adminMux)
-	adminSrv := &http.Server{
-		Addr:    cfg.Proxy.AdminListen,
-		Handler: adminMux,
-	}
-	go func() {
-		log.Printf("Admin UI listening on %s", cfg.Proxy.AdminListen)
-		if err := adminSrv.ListenAndServe(); err != nil && !errorsIs(err, http.ErrServerClosed) {
-			log.Printf("Admin server error: %v", err)
-		}
-	}()
-
-	// Start proxy
-	if err := proxySrv.Start(); err != nil {
-		log.Fatalf("Proxy start failed: %v", err)
 	}
 
 	// Graceful shutdown
