@@ -26,7 +26,18 @@ func DialWithAuthKeepAlive(network, addr string, auth *Auth, timeout time.Durati
 	if err != nil {
 		return nil, fmt.Errorf("dial: %w", err)
 	}
+	if err := Handshake(conn, auth); err != nil {
+		conn.Close()
+		return nil, err
+	}
+	return conn, nil
+}
 
+// Handshake performs the SOCKS5 greeting and the optional username/password
+// subnegotiation on an established connection.
+//
+// The connection is owned by the caller: on error the caller must close it.
+func Handshake(conn net.Conn, auth *Auth) error {
 	// Build method list
 	var methods []byte
 	if auth != nil && (auth.Username != "" || auth.Password != "") {
@@ -37,25 +48,21 @@ func DialWithAuthKeepAlive(network, addr string, auth *Auth, timeout time.Durati
 
 	// Write greeting: VER, NMETHODS, METHODS
 	if _, err := conn.Write([]byte{Version, byte(len(methods))}); err != nil {
-		conn.Close()
-		return nil, fmt.Errorf("write version/nmeth: %w", err)
+		return fmt.Errorf("write version/nmeth: %w", err)
 	}
 	if len(methods) > 0 {
 		if _, err := conn.Write(methods); err != nil {
-			conn.Close()
-			return nil, fmt.Errorf("write methods: %w", err)
+			return fmt.Errorf("write methods: %w", err)
 		}
 	}
 
 	// Read response: VER, METHOD
 	resp := make([]byte, 2)
 	if err := ReadFull(conn, resp); err != nil {
-		conn.Close()
-		return nil, fmt.Errorf("read response: %w", err)
+		return fmt.Errorf("read response: %w", err)
 	}
 	if resp[0] != Version {
-		conn.Close()
-		return nil, fmt.Errorf("unexpected version: %d", resp[0])
+		return fmt.Errorf("unexpected version: %d", resp[0])
 	}
 	chosen := resp[1]
 
@@ -64,8 +71,7 @@ func DialWithAuthKeepAlive(network, addr string, auth *Auth, timeout time.Durati
 		// ok
 	case AuthUserPass:
 		if auth == nil || (auth.Username == "" && auth.Password == "") {
-			conn.Close()
-			return nil, fmt.Errorf("server requires username/password but none provided")
+			return fmt.Errorf("server requires username/password but none provided")
 		}
 		// Send credentials: VER, ULEN, UNAME, PLEN, PASSWD
 		u := []byte(auth.Username)
@@ -78,25 +84,21 @@ func DialWithAuthKeepAlive(network, addr string, auth *Auth, timeout time.Durati
 		cred[offset] = byte(len(p))
 		copy(cred[offset+1:], p)
 		if _, err := conn.Write(cred); err != nil {
-			conn.Close()
-			return nil, fmt.Errorf("write credentials: %w", err)
+			return fmt.Errorf("write credentials: %w", err)
 		}
 		authResp := make([]byte, 2)
 		if err := ReadFull(conn, authResp); err != nil {
-			conn.Close()
-			return nil, fmt.Errorf("read auth response: %w", err)
+			return fmt.Errorf("read auth response: %w", err)
 		}
 		if authResp[1] != REPSuccess {
-			conn.Close()
-			return nil, fmt.Errorf("%w: code %d", ErrAuthFailed, authResp[1])
+			return fmt.Errorf("%w: code %d", ErrAuthFailed, authResp[1])
 		}
 	default:
-		conn.Close()
 		if chosen == AuthNoAcceptable {
-			return nil, ErrNoAcceptableMethod
+			return ErrNoAcceptableMethod
 		}
-		return nil, fmt.Errorf("unsupported auth method: %d", chosen)
+		return fmt.Errorf("unsupported auth method: %d", chosen)
 	}
 
-	return conn, nil
+	return nil
 }
