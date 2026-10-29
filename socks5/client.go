@@ -38,10 +38,14 @@ func DialWithAuthKeepAlive(network, addr string, auth *Auth, timeout time.Durati
 //
 // The connection is owned by the caller: on error the caller must close it.
 func Handshake(conn net.Conn, auth *Auth) error {
-	// Build method list
+	// Build method list. When credentials are configured, offer only
+	// user/password: offering no-auth as well lets an upstream that
+	// impersonates the real one select 0x00 and receive an unauthenticated
+	// tunnel that the client believes it authenticated.
+	authRequired := auth != nil && (auth.Username != "" || auth.Password != "")
 	var methods []byte
-	if auth != nil && (auth.Username != "" || auth.Password != "") {
-		methods = []byte{AuthNone, AuthUserPass}
+	if authRequired {
+		methods = []byte{AuthUserPass}
 	} else {
 		methods = []byte{AuthNone}
 	}
@@ -68,6 +72,10 @@ func Handshake(conn net.Conn, auth *Auth) error {
 
 	switch chosen {
 	case AuthNone:
+		if authRequired {
+			return fmt.Errorf("%w: upstream selected no-auth although credentials were configured",
+				ErrAuthFailed)
+		}
 		// ok
 	case AuthUserPass:
 		if auth == nil || (auth.Username == "" && auth.Password == "") {
