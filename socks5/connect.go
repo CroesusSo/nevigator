@@ -40,7 +40,9 @@ func DialConnect(ctx context.Context, proxyAddr, destAddr string, auth *Auth, ti
 	if err != nil {
 		return nil, fmt.Errorf("split dest %s: %w", destAddr, err)
 	}
-	port, err := strconv.Atoi(portStr)
+	// The port is encoded in two bytes, so an out-of-range value must be
+	// rejected rather than truncated.
+	port, err := strconv.ParseUint(portStr, 10, 16)
 	if err != nil {
 		return nil, fmt.Errorf("parse dest port %s: %w", portStr, err)
 	}
