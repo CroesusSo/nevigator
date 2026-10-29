@@ -60,6 +60,12 @@ func DialConnect(ctx context.Context, proxyAddr, destAddr string, auth *Auth, ti
 		conn.SetDeadline(time.Now().Add(timeout))
 	}
 
+	// A cancelled context must abort the handshake even when it carries no
+	// deadline: otherwise the caller waits forever on a peer that never
+	// answers, and the goroutine and socket leak.
+	stopWatch := watchContext(ctx, conn)
+	defer stopWatch()
+
 	if err := Handshake(conn, auth); err != nil {
 		conn.Close()
 		return nil, err
