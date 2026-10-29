@@ -52,12 +52,19 @@ pac:
 
 gfw:
   disabled: false
+  # The list is fetched through this proxy's own SOCKS5 listener, so it
+  # follows the same routing rules as any other client and leaves through the
+  # configured upstream. The source host is pinned to that route until a rule
+  # for it exists, so the first fetch does not go out directly.
   source_url: "https://raw.githubusercontent.com/gfwlist/gfwlist/master/gfwlist.txt"
   local_rules_path: "/etc/proxy-pac/gfw-rules.json"
   user_rules_path: "/etc/proxy-pac/user-rules.json"
   update_interval: 24h
   fetch_on_startup: true
   http_timeout: 60s
+  # DNS servers used to resolve host names for direct connections. They are
+  # authoritative: a name they do not know is not retried against the system
+  # resolver.
   custom_dns_servers: []
 
 # Example external proxy configurations (uncomment and customize).

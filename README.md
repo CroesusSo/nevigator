@@ -133,10 +133,14 @@ gfw:
   fetch_on_startup: true
   update_interval: 24h
   http_timeout: 60s
+  custom_dns_servers: []   # Optional DNS servers for direct connections
 ```
 
 - **disabled**: When true, the fetcher will not perform any fetches (startup, periodic, manual) and the PAC generator will exclude GFW rules. The feature can be toggled at runtime via the Admin UI (GFW tab).
 - The Admin UI also allows manual fetching and displays status (enabled/disabled, last fetch, rule count).
+- The list is fetched through the proxy's own SOCKS5 listener, so the request follows the same routing rules as any other client and leaves through the configured upstream proxy. The destination name is sent unresolved, so the SOCKS5 server resolves it.
+- Because the list is fetched before any rule for its source host can exist, that host is pinned to the upstream route until a rule for it appears. An explicit rule still takes precedence over the pin.
+- **custom_dns_servers**: used to resolve host names for direct connections. They are authoritative: a name they do not know is not retried against the system resolver.
 
 ## SSH Tunnels
 
