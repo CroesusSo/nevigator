@@ -829,6 +829,12 @@ func (s *Server) handleSOCKS5(conn net.Conn) {
 }
 
 // relay copies data between two connections bidirectionally.
+//
+// A half-close is propagated: when one direction reaches EOF, the write side
+// of the other connection is closed so the peer sees the FIN, and the
+// remaining direction is allowed to finish. Closing both sockets as soon as
+// either copy returns would truncate the response a peer sends after the
+// client half-closed.
 func (s *Server) relay(connID string, left, right net.Conn) {
 	defer s.untrackConnection(connID)
 	defer s.untrackLive(connID)
@@ -840,11 +846,23 @@ func (s *Server) relay(connID string, left, right net.Conn) {
 	errCh := make(chan error, 2)
 	go func() {
 		_, err := io.Copy(right, left)
+		closeWrite(right)
 		errCh <- err
 	}()
 	go func() {
 		_, err := io.Copy(left, right)
+		closeWrite(left)
 		errCh <- err
 	}()
 	<-errCh
+	<-errCh
+}
+
+// closeWrite shuts down the write side of conn so the peer observes a FIN.
+// Connections that do not support half-close are left open.
+func closeWrite(conn net.Conn) {
+	type closeWriter interface{ CloseWrite() error }
+	if cw, ok := conn.(closeWriter); ok {
+		cw.CloseWrite()
+	}
 }
