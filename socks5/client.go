@@ -92,6 +92,10 @@ func Handshake(conn net.Conn, auth *Auth) error {
 		// Send credentials: VER, ULEN, UNAME, PLEN, PASSWD
 		u := []byte(auth.Username)
 		p := []byte(auth.Password)
+		if len(u) > MaxDomainLen || len(p) > MaxDomainLen {
+			return fmt.Errorf("%w: username %d bytes, password %d bytes",
+				ErrUserPassTooLong, len(u), len(p))
+		}
 		cred := make([]byte, 1+1+len(u)+1+len(p))
 		cred[0] = 0x01 // VER
 		cred[1] = byte(len(u))
