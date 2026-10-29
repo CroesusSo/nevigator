@@ -26,10 +26,18 @@ func DialWithAuthKeepAlive(network, addr string, auth *Auth, timeout time.Durati
 	if err != nil {
 		return nil, fmt.Errorf("dial: %w", err)
 	}
+	// The dialer's timeout covers only the TCP connect. The greeting and the
+	// method selection must be bounded too, or an upstream that accepts the
+	// connection and never answers blocks this call forever.
+	if timeout > 0 {
+		conn.SetDeadline(time.Now().Add(timeout))
+	}
 	if err := Handshake(conn, auth); err != nil {
 		conn.Close()
 		return nil, err
 	}
+	// The tunnel is long-lived and carries no deadline of its own.
+	conn.SetDeadline(time.Time{})
 	return conn, nil
 }
 

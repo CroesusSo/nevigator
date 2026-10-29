@@ -263,6 +263,11 @@ func (r *Router) dialSOCKS5WithAuth(destAddr, socksAddr string, auth *socks5.Aut
 	req[2] = 0x00 // RSV
 	copy(req[3:], addrBytes)
 
+	// The CONNECT exchange must be bounded as well: an upstream that
+	// completes the handshake and then stops answering would block here
+	// forever.
+	conn.SetDeadline(time.Now().Add(r.dialTimeout))
+
 	_, err = conn.Write(req)
 	if err != nil {
 		conn.Close()
@@ -287,5 +292,7 @@ func (r *Router) dialSOCKS5WithAuth(destAddr, socksAddr string, auth *socks5.Aut
 		return nil, ErrSOCKS5GeneralFailure
 	}
 
+	// The tunnel is long-lived and carries no deadline of its own.
+	conn.SetDeadline(time.Time{})
 	return conn, nil
 }
