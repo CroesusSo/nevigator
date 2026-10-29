@@ -1454,7 +1454,7 @@ func (h *Handler) handleUpdateProxy(w http.ResponseWriter, r *http.Request, id s
 	}
 	h.router.SetProxyRegistry(cfg.Proxy.ExternalProxies)
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(proxy)
+	json.NewEncoder(w).Encode(redactProxy(proxy))
 }
 
 // handleDeleteProxy removes an external proxy by ID.
@@ -1488,7 +1488,50 @@ func (h *Handler) handleDeleteProxy(w http.ResponseWriter, r *http.Request, id s
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// handleGetProxyByID returns the full configuration of a proxy by ID.
+// redactProxy returns the admin-visible view of an external proxy.
+//
+// The stored password is never included: the caller only learns whether one
+// is set. The edit forms send the password only when the user types a new
+// one, and the update path keeps the stored value when the field is empty,
+// so a redacted password never clears the stored credential.
+func redactProxy(p pac.ExternalProxy) map[string]any {
+	keepaliveInterval := ""
+	if p.Keepalive.Interval > 0 {
+		keepaliveInterval = p.Keepalive.Interval.String()
+	}
+	ka := map[string]any{"enabled": false}
+	if p.Keepalive.TCP != nil {
+		ka["enabled"] = p.Keepalive.TCP.Enabled
+		if p.Keepalive.TCP.Enabled {
+			_, idle, interval, count := p.Keepalive.TCP.KeepAlive()
+			ka["idle"] = idle.String()
+			ka["interval"] = interval.String()
+			ka["count"] = count
+		}
+	}
+	return map[string]any{
+		"id":                  p.ID,
+		"kind":                p.Kind,
+		"address":             p.Address,
+		"username":            p.Username,
+		"has_password":        p.Password != "",
+		"ssh_port":            p.SSHPort,
+		"auth_method":         p.AuthMethod,
+		"private_key_path":    p.PrivateKeyPath,
+		"host_key_check":      p.HostKeyCheck,
+		"host_key_fingerprint": p.HostKeyFingerprint,
+		"keepalive": map[string]any{
+			"enabled":  p.Keepalive.Enabled,
+			"interval": keepaliveInterval,
+			"tcp":      ka,
+		},
+	}
+}
+
+// handleGetProxyByID returns the configuration of a proxy by ID.
+//
+// The stored password is not disclosed; the response reports whether one is
+// set instead.
 func (h *Handler) handleGetProxyByID(w http.ResponseWriter, r *http.Request, id string) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -1515,9 +1558,9 @@ func (h *Handler) handleGetProxyByID(w http.ResponseWriter, r *http.Request, id 
 		http.Error(w, "Proxy not found", http.StatusNotFound)
 		return
 	}
-	// Return full proxy object
+	// Return the proxy without its password
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(proxy)
+	json.NewEncoder(w).Encode(redactProxy(proxy))
 }
 
 // handleConfig dispatches GET and PUT on /api/config.

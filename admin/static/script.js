@@ -857,7 +857,11 @@ let currentEditProxyKind = null;
         document.getElementById('edit-socks5-id').textContent = proxy.id;
         document.getElementById('edit-socks5-addr').value = proxy.address || '';
         document.getElementById('edit-socks5-user').value = proxy.username || '';
-        document.getElementById('edit-socks5-pass').value = proxy.password || '';
+        // The stored password is never sent to the browser. Leave the field
+        // empty: an empty field means "keep the stored password".
+        const passField = document.getElementById('edit-socks5-pass');
+        passField.value = '';
+        passField.placeholder = proxy.has_password ? 'stored (leave blank to keep)' : 'optional';
         document.getElementById('edit-socks5-test-result').textContent = '';
         document.getElementById('edit-socks5-modal').style.display = 'block';
         document.getElementById('edit-socks5-overlay').style.display = 'block';
@@ -879,7 +883,11 @@ let currentEditProxyKind = null;
         document.getElementById('edit-ssh-port').value = proxy.ssh_port || 22;
         document.getElementById('edit-ssh-user').value = proxy.username || '';
         document.getElementById('edit-ssh-auth-method').value = proxy.auth_method || 'password';
-        document.getElementById('edit-ssh-pass').value = proxy.password || '';
+        // The stored password is never sent to the browser. Leave the field
+        // empty: an empty field means "keep the stored password".
+        const sshPassField = document.getElementById('edit-ssh-pass');
+        sshPassField.value = '';
+        sshPassField.placeholder = proxy.has_password ? 'stored (leave blank to keep)' : 'for password auth';
         document.getElementById('edit-ssh-private-key-path').value = proxy.private_key_path || '';
         document.getElementById('edit-ssh-host-key-check').value = proxy.host_key_check || 'strict';
         document.getElementById('edit-ssh-host-key-fingerprint').value = proxy.host_key_fingerprint || '';
