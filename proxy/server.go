@@ -246,15 +246,66 @@ func formatDest(host string, port int) string {
 }
 
 // Start begins accepting connections.
+//
+// The SOCKS5 listener is bound synchronously so its real address is known as
+// soon as Start returns: a client inside this process (the GFW fetcher)
+// dials it, and the bound port differs from the configured one when the
+// configuration asks for port 0.
+//
+// A failed SOCKS5 bind is returned as an error. The SOCKS5 listener is the
+// proxy's main interface, and a client inside this process depends on it, so
+// a half-started proxy is worse than a failed start.
 func (s *Server) Start() error {
 	go func() {
 		if err := s.httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Printf("HTTP proxy error: %v", err)
 		}
 	}()
-	go s.listenSOCKS5()
-	log.Printf("Proxy server started: HTTP on %s, SOCKS5 on %s", s.cfg.HTTPListen, s.cfg.SOCKS5Listen)
+	if err := s.startSOCKS5(); err != nil {
+		return fmt.Errorf("socks5 listen on %s: %w", s.cfg.SOCKS5Listen, err)
+	}
+	log.Printf("Proxy server started: HTTP on %s, SOCKS5 on %s", s.cfg.HTTPListen, s.SOCKS5DialAddr())
 	return nil
+}
+
+// startSOCKS5 binds the SOCKS5 listener and serves it in the background.
+//
+// An empty listen address disables the SOCKS5 listener: it is not an error.
+func (s *Server) startSOCKS5() error {
+	if s.cfg.SOCKS5Listen == "" {
+		return nil
+	}
+	ln, err := net.Listen("tcp", s.cfg.SOCKS5Listen)
+	if err != nil {
+		return err
+	}
+	s.mu.Lock()
+	s.socks5Ln = ln
+	s.mu.Unlock()
+	go s.serveSOCKS5(ln)
+	return nil
+}
+
+// SOCKS5DialAddr returns the address a client on this host must use to reach
+// this instance's own SOCKS5 listener. It is empty when the listener is not
+// running.
+//
+// A listener bound to a wildcard address is reported as loopback, because
+// that is where a client on this host connects.
+func (s *Server) SOCKS5DialAddr() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.socks5Ln == nil {
+		return ""
+	}
+	host, port, err := net.SplitHostPort(s.socks5Ln.Addr().String())
+	if err != nil {
+		return ""
+	}
+	if ip := net.ParseIP(host); ip == nil || ip.IsUnspecified() {
+		host = "127.0.0.1"
+	}
+	return net.JoinHostPort(host, port)
 }
 
 // defaultDrainGrace bounds how long Stop() waits for in-flight connections.
@@ -557,16 +608,8 @@ func (s *Server) handleHTTPSConnect(w http.ResponseWriter, r *http.Request, host
 	}()
 }
 
-// listenSOCKS5 accepts SOCKS5 client connections.
-func (s *Server) listenSOCKS5() {
-	ln, err := net.Listen("tcp", s.cfg.SOCKS5Listen)
-	if err != nil {
-		log.Printf("SOCKS5 listen failed: %v", err)
-		return
-	}
-	s.mu.Lock()
-	s.socks5Ln = ln
-	s.mu.Unlock()
+// serveSOCKS5 accepts SOCKS5 client connections on an already-bound listener.
+func (s *Server) serveSOCKS5(ln net.Listener) {
 	defer ln.Close()
 	log.Printf("SOCKS5 listening on %s", s.cfg.SOCKS5Listen)
 
